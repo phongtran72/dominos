@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#1a5c2a">
+  <title>Dominos</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+</head>
+<body>
+  <div id="game-container">
+
+    <!-- Header / Scoreboard -->
+    <header id="header">
+      <h1 class="logo">Dominos</h1>
+      <div class="scores">
+        <div class="score-box">
+          <span class="score-label">You</span>
+          <span id="human-score" class="score-value">0</span>
+        </div>
+        <div class="score-box">
+          <span class="score-label">AI</span>
+          <span id="ai-score" class="score-value">0</span>
+        </div>
+        <div class="score-box hand-box">
+          <span class="score-label">Hand</span>
+          <span id="hand-number" class="score-value">#1</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- AI Hand -->
+    <div id="ai-hand-area">
+      <div class="hand-label">AI <span id="ai-tile-count" class="tile-count">(14)</span></div>
+      <div id="ai-hand" class="hand-row"></div>
+    </div>
+
+    <!-- Status Bar -->
+    <div id="status-bar">
+      <span id="status-message">Welcome</span>
+      <button id="pass-btn" class="btn btn-pass" style="display:none;">Pass</button>
+    </div>
+
+    <!-- Board -->
+    <div id="board-area">
+      <div id="board-left-marker" class="end-marker" style="display:none;">
+        <span class="end-arrow">&larr;</span>
+      </div>
+      <div id="board" class="board-row"></div>
+      <div id="board-right-marker" class="end-marker" style="display:none;">
+        <span class="end-arrow">&rarr;</span>
+      </div>
+    </div>
+
+    <!-- Human Hand -->
+    <div id="human-hand-area">
+      <div class="hand-label">Your Hand <span id="human-tile-count" class="tile-count">(14)</span></div>
+      <div id="human-hand" class="hand-row"></div>
+    </div>
+  </div>
+
+  <!-- Start Screen Overlay -->
+  <div id="start-overlay" class="overlay">
+    <div class="modal">
+      <h2>Dominos</h2>
+      <p class="subtitle">Double-Six &bull; First to 100</p>
+      <div class="form-group">
+        <label>Difficulty</label>
+        <div class="radio-group">
+          <button class="btn btn-option active" data-difficulty="easy">Easy</button>
+          <button class="btn btn-option" data-difficulty="hard">Hard</button>
+        </div>
+      </div>
+      <button id="start-btn" class="btn btn-primary">Start Match</button>
+    </div>
+  </div>
+
+  <!-- Leader Choice Overlay -->
+  <div id="leader-overlay" class="overlay" style="display:none;">
+    <div class="modal">
+      <h2>Who Leads?</h2>
+      <p class="subtitle">Choose who plays first this hand</p>
+      <div class="leader-buttons">
+        <button class="btn btn-primary" data-leader="human">I'll Lead</button>
+        <button class="btn btn-secondary" data-leader="ai">AI Leads</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hand Result Overlay -->
+  <div id="result-overlay" class="overlay" style="display:none;">
+    <div class="modal">
+      <h2 id="result-title">Hand Over</h2>
+      <div id="result-body"></div>
+      <button id="next-hand-btn" class="btn btn-primary">Next Hand</button>
+    </div>
+  </div>
+
+  <!-- Match Result Overlay -->
+  <div id="match-overlay" class="overlay" style="display:none;">
+    <div class="modal">
+      <h2 id="match-title">Match Over</h2>
+      <div id="match-body"></div>
+      <button id="play-again-btn" class="btn btn-primary">Play Again</button>
+    </div>
+  </div>
+
+  <script src="game.js"></script>
+  <script src="ai.js"></script>
+  <script src="ui.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./sw.js');
+    }
+  </script>
+</body>
+</html>

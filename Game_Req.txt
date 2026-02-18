@@ -1,0 +1,324 @@
+1. Setting
+One standard double-six domino set (28 tiles).
+Two players.
+
+2. Objective
+The first player to reach 100 points wins the match.
+Points accumulate across multiple hands.
+
+3. The Deal
+
+Shuffle all 28 tiles face down.
+Deal 14 tiles to each player.
+There is no boneyard.
+Players keep their tiles concealed.
+
+
+4. Determining the Lead
+First Hand
+The human player chooses who leads.
+Subsequent Hands
+The winner of the previous hand leads the next hand.
+
+5. Gameplay
+
+5.1 Opening Play
+The leader may play any tile.
+
+5.2 Matching
+
+Players alternate turns.
+A tile must match one of the two open ends of the layout.
+Standard domino orientation rules apply.
+Only two open ends exist at all times.
+If a tile can be played on either end, the player must choose which end.
+
+5.3 Mandatory Play
+
+If a player has at least one legal move, they must play.
+A player may pass only if they have zero legal moves.
+
+6. End of Hand
+
+A hand ends in one of two ways: Domino or Block.
+6.1 Domino
+A hand ends by Domino when:
+
+A player plays their final tile.
+That player has no tiles remaining.
+
+The hand ends immediately upon placement.
+
+
+
+
+
+
+
+
+
+6.2 Block
+
+
+
+
+
+A hand ends by Block when:
+
+
+
+Neither player has a legal move, and
+At least one player still has tiles remaining.
+
+
+
+
+A Block may occur in two forms:
+
+
+
+
+
+Immediate Lock
+
+
+
+
+
+A player places a tile and, immediately after placement, neither player has a legal move.
+
+
+
+
+
+Confirmed Lock (Pass–Pass)
+
+
+
+
+
+A player has no legal move and passes.
+
+The opponent also has no legal move and passes.
+
+The board is locked and the hand ends.
+
+
+
+
+
+
+
+
+
+7. The Ghost 13 Rule (0–0)
+
+
+
+
+
+
+
+7.1 Normal Value
+
+
+
+
+
+The [0–0] tile is worth 0 pips if:
+
+
+
+It is playable at the end of the hand, or
+It has already been played on the board.
+
+
+
+
+
+
+7.2 Dead Condition
+
+
+
+
+
+At the end of the hand, if:
+
+
+
+The [0–0] tile remains in a player’s hand, and
+It has no legal placement on the final board layout,
+
+
+
+
+Then it becomes 13 pips for scoring purposes.
+
+
+
+Dead status is determined strictly by board state.
+
+
+
+
+
+
+
+
+
+8. Determining the Aggressor (Block Only)
+
+
+
+
+
+If the hand ends by Block, an Aggressor must be identified.
+
+
+
+
+
+
+
+
+
+8.1 Puppeteer Rule (Highest Priority)
+
+
+
+
+
+A player is the Aggressor if:
+
+
+
+They play a tile.
+Their opponent has exactly one legal tile.
+The opponent must play it (mandatory play).
+Every legal placement of that tile results in a blocked board.
+
+
+
+
+If the opponent’s forced move produces the block, the previous player is the Aggressor.
+
+
+
+
+
+
+
+
+
+8.2 Direct Block
+
+
+
+
+
+If the Puppeteer rule does not apply:
+
+
+
+The Aggressor is the player who made the most recent tile placement before the board became locked.
+
+
+
+Every Block has exactly one Aggressor.
+
+
+
+
+
+
+
+
+
+9. Scoring
+
+
+
+
+
+All pip counts include Ghost 13 adjustments when applicable.
+
+
+
+
+
+
+
+
+
+9.1 Domino
+
+
+
+
+
+Winner: Player who emptied their hand.
+
+
+
+Points awarded:
+
+Opponent’s remaining pip total.
+
+
+
+
+
+
+
+
+
+9.2 Successful Block
+
+
+
+
+
+Condition:
+
+Aggressor’s remaining pip total is less than or equal to the opponent’s.
+
+(Aggressor wins ties.)
+
+
+
+Winner: Aggressor.
+
+
+
+Points awarded:
+
+Opponent’s pip total × 2.
+
+
+
+
+
+
+
+
+
+9.3 Failed Block
+
+
+
+
+
+Condition:
+
+Aggressor’s remaining pip total is greater than the opponent’s.
+
+
+
+Winner: Opponent.
+
+
+
+Points awarded:
+
+Sum of all remaining pips in both hands.
