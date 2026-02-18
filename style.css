@@ -100,6 +100,8 @@ body {
 #ai-hand-area, #human-hand-area {
   flex-shrink: 0;
   padding: 4px 0;
+  overflow: hidden;
+  width: 100%;
 }
 
 .hand-label {
@@ -124,6 +126,8 @@ body {
   justify-content: center;
   min-height: 40px;
   align-items: center;
+  width: 100%;
+  max-width: 100%;
 }
 
 /* --- Status Bar --- */
@@ -520,14 +524,14 @@ body {
    =========================================================== */
 @media (max-width: 480px) {
   :root {
-    --tile-w: 48px;
-    --tile-h: 26px;
-    --half-w: 24px;
-    --half-h: 26px;
+    --tile-w: 44px;
+    --tile-h: 24px;
+    --half-w: 22px;
+    --half-h: 24px;
     --pip-size: 4px;
     --back-w: 20px;
     --back-h: 30px;
-    --hand-gap: 4px;
+    --hand-gap: 3px;
     --board-gap: 1px;
   }
 
@@ -805,13 +809,13 @@ body {
    =========================================================== */
 @media (max-width: 360px) {
   :root {
-    --tile-w: 42px;
-    --tile-h: 24px;
-    --half-w: 21px;
-    --half-h: 24px;
+    --tile-w: 38px;
+    --tile-h: 22px;
+    --half-w: 19px;
+    --half-h: 22px;
     --pip-size: 3px;
-    --back-w: 18px;
-    --back-h: 26px;
+    --back-w: 16px;
+    --back-h: 24px;
     --hand-gap: 2px;
   }
 
