@@ -126,8 +126,16 @@ body {
   justify-content: center;
   min-height: 40px;
   align-items: center;
-  width: 100%;
-  max-width: 100%;
+}
+
+/* Force human hand tiles into a grid that auto-wraps by screen width */
+#human-hand {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, var(--tile-w));
+  gap: var(--hand-gap);
+  justify-content: center;
+  justify-items: center;
+  min-height: 40px;
 }
 
 /* --- Status Bar --- */
