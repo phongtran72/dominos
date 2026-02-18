@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dominos AI — Minimax Implementation Summary</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, sans-serif;
+      background: #0f1117;
+      color: #e0e0e0;
+      line-height: 1.7;
+      padding: 24px;
+    }
+
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      color: #f0d060;
+      font-size: 2rem;
+      margin-bottom: 8px;
+      border-bottom: 2px solid #333;
+      padding-bottom: 12px;
+    }
+
+    h1 span { color: #888; font-size: 1rem; font-weight: 400; }
+
+    h2 {
+      color: #4caf50;
+      font-size: 1.3rem;
+      margin: 32px 0 12px 0;
+      padding: 8px 12px;
+      background: rgba(76, 175, 80, 0.1);
+      border-left: 4px solid #4caf50;
+      border-radius: 0 6px 6px 0;
+    }
+
+    h3 {
+      color: #64b5f6;
+      font-size: 1.05rem;
+      margin: 20px 0 8px 0;
+    }
+
+    p { margin: 8px 0; }
+
+    .highlight { color: #f0d060; font-weight: 600; }
+    .code-val { color: #ce93d8; font-family: 'Consolas', monospace; }
+    .positive { color: #66bb6a; }
+    .negative { color: #ef5350; }
+
+    code {
+      background: #1a1d27;
+      color: #ce93d8;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.9em;
+      font-family: 'Consolas', 'Courier New', monospace;
+    }
+
+    pre {
+      background: #1a1d27;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 16px;
+      overflow-x: auto;
+      font-size: 0.85rem;
+      line-height: 1.6;
+      margin: 12px 0;
+      font-family: 'Consolas', 'Courier New', monospace;
+    }
+
+    pre .comment { color: #6a6a6a; }
+    pre .keyword { color: #569cd6; }
+    pre .func { color: #dcdcaa; }
+    pre .num { color: #b5cea8; }
+    pre .str { color: #ce9178; }
+
+    .card {
+      background: #1a1d27;
+      border: 1px solid #2a2d37;
+      border-radius: 10px;
+      padding: 20px;
+      margin: 16px 0;
+    }
+
+    .card-title {
+      color: #f0d060;
+      font-weight: 700;
+      font-size: 1rem;
+      margin-bottom: 8px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0;
+      font-size: 0.9rem;
+    }
+
+    th {
+      background: #1a2a1a;
+      color: #4caf50;
+      padding: 10px 14px;
+      text-align: left;
+      border-bottom: 2px solid #4caf50;
+    }
+
+    td {
+      padding: 8px 14px;
+      border-bottom: 1px solid #2a2d37;
+    }
+
+    tr:hover td { background: rgba(255, 255, 255, 0.03); }
+
+    .formula {
+      background: #1a1a2e;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 16px 20px;
+      margin: 12px 0;
+      font-family: 'Consolas', monospace;
+      font-size: 1rem;
+      text-align: center;
+      color: #f0d060;
+    }
+
+    .flow {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      margin: 12px 0;
+    }
+
+    .flow-step {
+      background: #1a2a1a;
+      border: 1px solid #4caf50;
+      border-radius: 6px;
+      padding: 6px 14px;
+      font-size: 0.85rem;
+      color: #a5d6a7;
+    }
+
+    .flow-arrow { color: #4caf50; font-size: 1.2rem; }
+
+    .diagram {
+      background: #1a1d27;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 20px;
+      margin: 16px 0;
+      font-family: 'Consolas', monospace;
+      font-size: 0.82rem;
+      line-height: 1.5;
+      overflow-x: auto;
+      white-space: pre;
+      color: #aaa;
+    }
+
+    .diagram .node { color: #64b5f6; }
+    .diagram .leaf { color: #66bb6a; }
+    .diagram .prune { color: #ef5350; }
+
+    ul { margin: 8px 0 8px 24px; }
+    li { margin: 4px 0; }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    @media (max-width: 640px) {
+      .two-col { grid-template-columns: 1fr; }
+      body { padding: 12px; }
+      h1 { font-size: 1.5rem; }
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 12px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      margin-left: 8px;
+    }
+
+    .badge-green { background: #1b5e20; color: #a5d6a7; }
+    .badge-blue { background: #0d47a1; color: #90caf9; }
+    .badge-red { background: #b71c1c; color: #ef9a9a; }
+  </style>
+</head>
+<body>
+<div class="container">
+
+  <h1>Dominos AI &mdash; Minimax Implementation <span>ai.js</span></h1>
+  <p>A perfect-information minimax engine with alpha-beta pruning for double-six dominoes.</p>
+
+  <!-- ============================================ -->
+  <h2>1. Why Minimax Works Here</h2>
+  <!-- ============================================ -->
+
+  <div class="card">
+    <p>In standard domino games, each player's hand is hidden &mdash; making it a game of
+      <em>imperfect</em> information. However, in our variant:</p>
+    <ul>
+      <li>All <span class="highlight">28 tiles</span> are dealt &mdash; 14 to each player</li>
+      <li>There is <span class="highlight">no boneyard</span> (no draw pile)</li>
+      <li>The AI can see both hands</li>
+    </ul>
+    <p>This makes it a <span class="highlight">perfect-information, zero-sum, two-player game</span>
+      &mdash; exactly the class of problems minimax was designed for. No probability or Monte Carlo
+      simulation needed.</p>
+  </div>
+
+  <!-- ============================================ -->
+  <h2>2. Architecture Overview</h2>
+  <!-- ============================================ -->
+
+  <div class="flow">
+    <div class="flow-step">chooseMoveHard()</div>
+    <div class="flow-arrow">&rarr;</div>
+    <div class="flow-step">Order root moves</div>
+    <div class="flow-arrow">&rarr;</div>
+    <div class="flow-step">For each move: minimax()</div>
+    <div class="flow-arrow">&rarr;</div>
+    <div class="flow-step">Pick highest score</div>
+  </div>
+
+  <div class="diagram"><span class="node">         AI (MAX) &mdash; depth 0</span>
+        /          |           \
+  <span class="node">Human (MIN)</span>   <span class="node">Human (MIN)</span>   <span class="node">Human (MIN)</span>   &mdash; depth 1
+    /    \        |          <span class="prune">[pruned]</span>
+ <span class="node">AI(MAX)</span> <span class="node">AI(MAX)</span>  <span class="node">AI(MAX)</span>                  &mdash; depth 2
+   |       |       |
+  <span class="leaf">eval</span>   <span class="leaf">eval</span>   <span class="leaf">eval</span>                    &mdash; depth limit / terminal</div>
+
+  <p>The AI is the <span class="highlight">maximizing</span> player (positive scores are good).
+     The human is the <span class="highlight">minimizing</span> player (assumes optimal play).</p>
+
+  <!-- ============================================ -->
+  <h2>3. Adaptive Search Depth</h2>
+  <!-- ============================================ -->
+
+  <p>Search depth increases as the game progresses and the game tree shrinks:</p>
+
+  <table>
+    <tr>
+      <th>Tiles Remaining</th>
+      <th>Max Depth</th>
+      <th>Phase</th>
+    </tr>
+    <tr>
+      <td><code>21 &ndash; 28</code></td>
+      <td class="code-val">8 plies</td>
+      <td>Opening &mdash; tree is huge, search shallow</td>
+    </tr>
+    <tr>
+      <td><code>15 &ndash; 20</code></td>
+      <td class="code-val">10 plies</td>
+      <td>Early mid-game</td>
+    </tr>
+    <tr>
+      <td><code>11 &ndash; 14</code></td>
+      <td class="code-val">14 plies</td>
+      <td>Late mid-game</td>
+    </tr>
+    <tr>
+      <td><code>&le; 10</code></td>
+      <td class="code-val">50 (full solve)</td>
+      <td>Endgame &mdash; exact solution</td>
+    </tr>
+  </table>
+
+  <pre><span class="keyword">function</span> <span class="func">getMaxDepth</span>(totalTiles) {
+  <span class="keyword">if</span> (totalTiles &lt;= <span class="num">10</span>) <span class="keyword">return</span> <span class="num">50</span>;   <span class="comment">// full solve</span>
+  <span class="keyword">if</span> (totalTiles &lt;= <span class="num">14</span>) <span class="keyword">return</span> <span class="num">14</span>;
+  <span class="keyword">if</span> (totalTiles &lt;= <span class="num">20</span>) <span class="keyword">return</span> <span class="num">10</span>;
+  <span class="keyword">return</span> <span class="num">8</span>;
+}</pre>
+
+  <p>A safety cap of <code>1,000,000 nodes</code> prevents the UI from freezing on
+    unexpectedly deep branches.</p>
+
+  <!-- ============================================ -->
+  <h2>4. Game State Representation</h2>
+  <!-- ============================================ -->
+
+  <p>Instead of cloning full Board/Hand objects, the search uses lightweight primitives
+    to avoid garbage collection pressure in the hot path:</p>
+
+  <table>
+    <tr><th>State</th><th>Representation</th></tr>
+    <tr>
+      <td>Board</td>
+      <td>Two integers: <code>left</code> and <code>right</code> (the open end values)</td>
+    </tr>
+    <tr>
+      <td>Each hand</td>
+      <td>Array of Tile references: <code>aiTiles[]</code>, <code>humanTiles[]</code></td>
+    </tr>
+    <tr>
+      <td>Moves</td>
+      <td>Flat array: <code>[tileIndex, end, tileIndex, end, ...]</code></td>
+    </tr>
+    <tr>
+      <td>Tile removal</td>
+      <td><code>removeTile(tiles, idx)</code> &rarr; new array (no mutation)</td>
+    </tr>
+    <tr>
+      <td>Placement</td>
+      <td><code>simPlace(left, right, tile, end)</code> &rarr; <code>[newLeft, newRight]</code></td>
+    </tr>
+  </table>
+
+  <!-- ============================================ -->
+  <h2>5. Terminal Detection</h2>
+  <!-- ============================================ -->
+
+  <p>The search recognizes three types of terminal states &mdash; each returns an exact
+    game-theoretic score:</p>
+
+  <div class="two-col">
+    <div class="card">
+      <div class="card-title">Domino <span class="badge badge-green">Win/Lose</span></div>
+      <p>A player empties their hand. Winner scores the loser's remaining pips.</p>
+      <pre>score = loserPips
+<span class="comment">// Positive if AI wins, negative if human wins</span></pre>
+    </div>
+    <div class="card">
+      <div class="card-title">Immediate Lock <span class="badge badge-red">Block</span></div>
+      <p>After a placement, <em>neither</em> player has legal moves. Detected inline
+        without consuming an extra search level.</p>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Confirmed Lock (Pass-Pass) <span class="badge badge-red">Block</span></div>
+    <p>Both players pass consecutively. Tracked by <code>consPass</code> counter.
+      Passes don't consume search depth (no board state change).</p>
+  </div>
+
+  <h3>Block Scoring (Aggressor Rule)</h3>
+  <p>The last player to place a tile is the <span class="highlight">aggressor</span>:</p>
+
+  <table>
+    <tr><th>Outcome</th><th>Condition</th><th>Score</th></tr>
+    <tr>
+      <td class="positive">Successful Block</td>
+      <td>Aggressor's pips &le; opponent's pips</td>
+      <td><code>opponent's pips &times; 2</code> &rarr; aggressor wins</td>
+    </tr>
+    <tr>
+      <td class="negative">Failed Block</td>
+      <td>Aggressor's pips &gt; opponent's pips</td>
+      <td><code>ALL remaining pips</code> &rarr; opponent wins</td>
+    </tr>
+  </table>
+
+  <p><em>Note: The full Puppeteer Rule is enforced in the game engine (<code>game.js</code>).
+    Inside the search tree, the simplified last-placer = aggressor heuristic is used
+    for performance.</em></p>
+
+  <!-- ============================================ -->
+  <h2>6. Static Evaluation Function</h2>
+  <!-- ============================================ -->
+
+  <p>When the search reaches its depth limit without hitting a terminal, the position
+    is scored by a weighted sum of 7 factors:</p>
+
+  <div class="formula">
+    f(state) = pipScore + mobScore + tileScore + suitScore + ghost13 + doublePenalty
+  </div>
+
+  <table>
+    <tr>
+      <th>#</th>
+      <th>Factor</th>
+      <th>Weight</th>
+      <th>Logic</th>
+    </tr>
+    <tr>
+      <td>1</td>
+      <td>Pip Advantage</td>
+      <td class="code-val">&times;2</td>
+      <td><code>(humanPips &minus; aiPips)</code> &mdash; lower pips = better for AI</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>Mobility</td>
+      <td class="code-val">&times;4</td>
+      <td><code>(aiMoves &minus; humanMoves)</code> &mdash; more options = stronger position</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>Tile Count</td>
+      <td class="code-val">&times;5</td>
+      <td><code>(humanTiles &minus; aiTiles)</code> &mdash; fewer tiles = closer to domino</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>Suit Control</td>
+      <td class="code-val">&times;3</td>
+      <td>How many tiles each player can play on each board end</td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td>Lock-In Bonus</td>
+      <td class="code-val">+8/+15</td>
+      <td><span class="positive">+8</span> per end human can't match;
+          <span class="positive">+15</span> if human locked out of both ends</td>
+    </tr>
+    <tr>
+      <td>6</td>
+      <td>Ghost 13</td>
+      <td class="code-val">&plusmn;10</td>
+      <td><span class="positive">+10</span> if human holds [0|0] with no 0 on board;
+          <span class="negative">&minus;10</span> if AI holds it</td>
+    </tr>
+    <tr>
+      <td>7</td>
+      <td>Double Liability</td>
+      <td class="code-val">&times;0.5</td>
+      <td>Penalty per unplayed double: <code>&minus;(pipCount + 2) &times; 0.5</code>
+          (doubles only match one suit value)</td>
+    </tr>
+  </table>
+
+  <!-- ============================================ -->
+  <h2>7. Move Ordering</h2>
+  <!-- ============================================ -->
+
+  <p>Alpha-beta pruning is most effective when the best moves are searched first.
+    Before recursing, moves are scored and sorted by these heuristics:</p>
+
+  <table>
+    <tr><th>Priority</th><th>Heuristic</th><th>Bonus</th></tr>
+    <tr>
+      <td>1</td>
+      <td>Domino (last tile = instant win)</td>
+      <td class="code-val">+1000</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>Forces opponent pass (opponent has 0 moves after)</td>
+      <td class="code-val">+25</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>Ghost 13 exploitation (traps opponent's [0|0])</td>
+      <td class="code-val">+15</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>Play doubles early (dispose liability)</td>
+      <td class="code-val">+12</td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td>High-pip tiles (shed weight)</td>
+      <td class="code-val">+pipCount &times; 1.5</td>
+    </tr>
+  </table>
+
+  <p>Move ordering is only applied when there are <code>&gt; 2</code> legal moves
+    (sorting overhead isn't worth it for 1-2 moves).</p>
+
+  <!-- ============================================ -->
+  <h2>8. Alpha-Beta Pruning</h2>
+  <!-- ============================================ -->
+
+  <div class="card">
+    <div class="card-title">How it works</div>
+    <p>Alpha-beta maintains a window <code>[&alpha;, &beta;]</code> of the best scores
+      each player can guarantee:</p>
+    <ul>
+      <li><strong>&alpha;</strong> = best score AI can guarantee (starts at &minus;&infin;)</li>
+      <li><strong>&beta;</strong> = best score Human can guarantee (starts at +&infin;)</li>
+    </ul>
+    <p>When <code>&beta; &le; &alpha;</code>, the current branch is <span class="negative">pruned</span>
+      &mdash; neither player would allow play to reach this state.</p>
+  </div>
+
+  <pre><span class="comment">// Maximizing (AI's turn)</span>
+<span class="keyword">var</span> best = -<span class="num">100000</span>;
+<span class="keyword">for</span> (<span class="keyword">var</span> i = <span class="num">0</span>; i &lt; numMoves; i++) {
+  <span class="comment">// ... simulate move ...</span>
+  <span class="keyword">var</span> sc = <span class="func">minimax</span>(..., <span class="keyword">false</span>, depth-<span class="num">1</span>, alpha, beta, ...);
+  <span class="keyword">if</span> (sc &gt; best) best = sc;
+  <span class="keyword">if</span> (best &gt; alpha) alpha = best;
+  <span class="keyword">if</span> (beta &lt;= alpha) <span class="keyword">break</span>;  <span class="comment">// &beta; cutoff &mdash; prune!</span>
+}
+
+<span class="comment">// Minimizing (Human's turn)</span>
+<span class="keyword">var</span> best = <span class="num">100000</span>;
+<span class="keyword">for</span> (...) {
+  <span class="keyword">var</span> sc = <span class="func">minimax</span>(..., <span class="keyword">true</span>, depth-<span class="num">1</span>, alpha, beta, ...);
+  <span class="keyword">if</span> (sc &lt; best) best = sc;
+  <span class="keyword">if</span> (best &lt; beta) beta = best;
+  <span class="keyword">if</span> (beta &lt;= alpha) <span class="keyword">break</span>;  <span class="comment">// &alpha; cutoff &mdash; prune!</span>
+}</pre>
+
+  <!-- ============================================ -->
+  <h2>9. Ghost 13 Rule</h2>
+  <!-- ============================================ -->
+
+  <div class="card">
+    <div class="card-title">What is Ghost 13?</div>
+    <p>If the <code>[0|0]</code> tile is stuck in a player's hand at the end of a hand,
+      and neither board end is <code>0</code>, the <code>[0|0]</code> counts as
+      <span class="highlight">13 pips</span> instead of 0.</p>
+    <p>The AI exploits this in three ways:</p>
+    <ul>
+      <li><strong>Evaluation:</strong> <span class="positive">+10</span> bonus when human holds
+        [0|0] and board has no 0 end; <span class="negative">&minus;10</span> when AI holds it</li>
+      <li><strong>Move ordering:</strong> Prioritizes moves that keep board ends away from 0
+        when opponent holds [0|0]</li>
+      <li><strong>Terminal scoring:</strong> <code>totalPips()</code> applies the 13-pip penalty
+        in all domino/block score calculations</li>
+    </ul>
+  </div>
+
+  <!-- ============================================ -->
+  <h2>10. Performance Characteristics</h2>
+  <!-- ============================================ -->
+
+  <table>
+    <tr><th>Metric</th><th>Value</th></tr>
+    <tr>
+      <td>Runtime environment</td>
+      <td>Browser main thread (no Web Worker)</td>
+    </tr>
+    <tr>
+      <td>Node safety cap</td>
+      <td><code>1,000,000</code> nodes per move</td>
+    </tr>
+    <tr>
+      <td>Move ordering</td>
+      <td>Applied when &gt; 2 moves available</td>
+    </tr>
+    <tr>
+      <td>Memory strategy</td>
+      <td>Flat arrays, no object allocation in hot path</td>
+    </tr>
+    <tr>
+      <td>Typical decision time</td>
+      <td>~50ms (opening) to ~500ms (mid-game)</td>
+    </tr>
+    <tr>
+      <td>Endgame (&le;10 tiles)</td>
+      <td>Solved exactly (depth 50 = no depth limit)</td>
+    </tr>
+  </table>
+
+  <!-- ============================================ -->
+  <h2>11. Easy vs Hard Mode</h2>
+  <!-- ============================================ -->
+
+  <div class="two-col">
+    <div class="card">
+      <div class="card-title">Easy Mode <span class="badge badge-blue">Random</span></div>
+      <p>Picks a random legal move. No strategy, no search.</p>
+      <pre><span class="keyword">return</span> legalMoves[
+  Math.<span class="func">floor</span>(Math.<span class="func">random</span>()
+    * legalMoves.length)
+];</pre>
+    </div>
+    <div class="card">
+      <div class="card-title">Hard Mode <span class="badge badge-red">Minimax</span></div>
+      <p>Full minimax with alpha-beta. Evaluates thousands to millions of positions
+        per move to find the optimal play.</p>
+      <pre><span class="comment">// For each legal move:</span>
+score = <span class="func">minimax</span>(
+  newState, human,
+  maxDepth, &alpha;, &beta;
+);
+<span class="comment">// Pick the move with</span>
+<span class="comment">// the highest score</span></pre>
+    </div>
+  </div>
+
+  <div style="margin-top: 40px; padding-top: 16px; border-top: 1px solid #333; text-align: center; color: #666; font-size: 0.8rem;">
+    Dominos AI &mdash; Implementation Summary &mdash; ai.js
+  </div>
+
+</div>
+</body>
+</html>
