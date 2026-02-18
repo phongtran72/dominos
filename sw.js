@@ -35,11 +35,20 @@ self.addEventListener('activate', function (e) {
   self.clients.claim();
 });
 
-// Fetch: serve from cache, fall back to network
+// Fetch: network-first, fall back to cache (for offline support)
+// This ensures users always get the latest version when online.
 self.addEventListener('fetch', function (e) {
   e.respondWith(
-    caches.match(e.request).then(function (cached) {
-      return cached || fetch(e.request);
+    fetch(e.request).then(function (response) {
+      // Update cache with fresh response
+      var clone = response.clone();
+      caches.open(CACHE_NAME).then(function (cache) {
+        cache.put(e.request, clone);
+      });
+      return response;
+    }).catch(function () {
+      // Offline: serve from cache
+      return caches.match(e.request);
     })
   );
 });
