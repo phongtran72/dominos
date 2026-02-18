@@ -129,7 +129,7 @@
     } else {
       setStatus('AI is thinking...');
       disableHumanHand();
-      setTimeout(function () { executeAITurn(); }, 700);
+      setTimeout(function () { executeAITurn(); }, 500);
     }
   }
 
@@ -224,7 +224,7 @@
     // AI's turn
     setStatus('AI is thinking...');
     disableHumanHand();
-    setTimeout(function () { executeAITurn(); }, 700);
+    setTimeout(function () { executeAITurn(); }, 500);
   }
 
   function onPassClicked() {
@@ -241,7 +241,7 @@
 
     setStatus('AI is thinking...');
     disableHumanHand();
-    setTimeout(function () { executeAITurn(); }, 700);
+    setTimeout(function () { executeAITurn(); }, 500);
   }
 
   function executeAITurn() {
@@ -264,7 +264,11 @@
       return;
     }
 
+    // Time the AI computation — minimax may take variable time
+    var t0 = Date.now();
     var move = ai.chooseMove(legalMoves, engine);
+    var elapsed = Date.now() - t0;
+
     var result = engine.playTile('ai', move.tile, move.end);
 
     setStatus('AI plays ' + move.tile.toString() + '.');
@@ -273,15 +277,19 @@
     renderHumanHand();
     updateScoreboard();
 
+    // Adaptive post-play delay: if minimax took a while, reduce the
+    // pause so total feel stays consistent (~600ms visible after play)
+    var postDelay = Math.max(300, 600 - elapsed);
+
     if (result.handEnd) {
-      setTimeout(function () { showHandResult(result.handEnd); }, 600);
+      setTimeout(function () { showHandResult(result.handEnd); }, postDelay);
       return;
     }
 
     setTimeout(function () {
       isProcessing = false;
       startHumanTurn();
-    }, 600);
+    }, postDelay);
   }
 
   // ---- Hand/Match Result ----
