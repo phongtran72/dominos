@@ -21,6 +21,7 @@
   var els = {};
   var engine = null;
   var ai = null;
+  var aiWorker = null;
   var selectedTile = null;
   var selectedMoves = []; // legal moves for selected tile
   var difficulty = 'easy';
@@ -51,6 +52,17 @@
     els.matchBody = document.getElementById('match-body');
 
     setupEventListeners();
+    initWorker();
+  }
+
+  function initWorker() {
+    if (typeof Worker !== 'undefined') {
+      try {
+        aiWorker = new Worker('./ai-worker.js');
+      } catch (e) {
+        aiWorker = null;
+      }
+    }
   }
 
   function setupEventListeners() {
@@ -244,31 +256,7 @@
     setTimeout(function () { executeAITurn(); }, 500);
   }
 
-  function executeAITurn() {
-    var legalMoves = engine.getLegalMoves('ai');
-
-    if (legalMoves.length === 0) {
-      // AI passes
-      setStatus('AI has no legal moves — AI passes.');
-      var blockResult = engine.pass('ai');
-
-      if (blockResult) {
-        setTimeout(function () { showHandResult(blockResult); }, 800);
-        return;
-      }
-
-      setTimeout(function () {
-        isProcessing = false;
-        startHumanTurn();
-      }, 800);
-      return;
-    }
-
-    // Time the AI computation — minimax may take variable time
-    var t0 = Date.now();
-    var move = ai.chooseMove(legalMoves, engine);
-    var elapsed = Date.now() - t0;
-
+  function applyAIMove(move, elapsed) {
     var result = engine.playTile('ai', move.tile, move.end);
 
     setStatus('AI plays ' + move.tile.toString() + '.');
@@ -290,6 +278,98 @@
       isProcessing = false;
       startHumanTurn();
     }, postDelay);
+  }
+
+  function executeAITurn() {
+    var legalMoves = engine.getLegalMoves('ai');
+
+    if (legalMoves.length === 0) {
+      // AI passes
+      setStatus('AI has no legal moves — AI passes.');
+      var blockResult = engine.pass('ai');
+
+      if (blockResult) {
+        setTimeout(function () { showHandResult(blockResult); }, 800);
+        return;
+      }
+
+      setTimeout(function () {
+        isProcessing = false;
+        startHumanTurn();
+      }, 800);
+      return;
+    }
+
+    // Hard mode with Web Worker available → async off-main-thread
+    if (difficulty === 'hard' && aiWorker) {
+      var t0 = Date.now();
+
+      // Serialize state for the worker
+      var hand = engine.hand;
+      var board = hand.board;
+      var msg = {
+        aiTiles: hand.aiHand.tiles.map(function (t) { return { low: t.low, high: t.high }; }),
+        humanTiles: hand.humanHand.tiles.map(function (t) { return { low: t.low, high: t.high }; }),
+        left: board.isEmpty() ? null : board.leftEnd,
+        right: board.isEmpty() ? null : board.rightEnd,
+        boardEmpty: board.isEmpty(),
+        moveHistory: hand.moveHistory.map(function (m) {
+          return {
+            player: m.player,
+            tileLow: m.tile ? m.tile.low : null,
+            tileHigh: m.tile ? m.tile.high : null,
+            end: m.end,
+            pass: !!m.pass,
+            boardLeft: m.boardEnds ? m.boardEnds.left : null,
+            boardRight: m.boardEnds ? m.boardEnds.right : null
+          };
+        }),
+        legalMoves: legalMoves.map(function (m) {
+          return { tileLow: m.tile.low, tileHigh: m.tile.high, end: m.end };
+        })
+      };
+
+      aiWorker.onmessage = function (e) {
+        var elapsed = Date.now() - t0;
+        var result = e.data;
+
+        // Map result back to a legalMove
+        var tileId = result.tileId;
+        var end = result.end;
+        var move = null;
+        for (var i = 0; i < legalMoves.length; i++) {
+          if (legalMoves[i].tile.id === tileId && legalMoves[i].end === end) {
+            move = legalMoves[i];
+            break;
+          }
+        }
+        if (!move) {
+          // Fallback: match by tile only
+          for (var i = 0; i < legalMoves.length; i++) {
+            if (legalMoves[i].tile.id === tileId) { move = legalMoves[i]; break; }
+          }
+        }
+        if (!move) move = legalMoves[0];
+
+        applyAIMove(move, elapsed);
+      };
+
+      aiWorker.onerror = function () {
+        // Fallback to synchronous on worker error
+        var move = ai.chooseMove(legalMoves, engine);
+        var elapsed = Date.now() - t0;
+        applyAIMove(move, elapsed);
+      };
+
+      aiWorker.postMessage(msg);
+      return;
+    }
+
+    // Synchronous path: easy mode or no Worker support
+    var t0 = Date.now();
+    var move = ai.chooseMove(legalMoves, engine);
+    var elapsed = Date.now() - t0;
+    applyAIMove(move, elapsed);
   }
 
   // ---- Hand/Match Result ----
@@ -407,25 +487,12 @@
       el.appendChild(createHalfElement(tile.high));
       el.appendChild(createHalfElement(tile.low));
     } else {
-      // Determine orientation based on placement
-      if (placement.end === 'left' || (!placement.end && placement === engine.hand.board.tiles[0])) {
-        // Left side: the matching side faces right (inward)
-        if (placement.flipped) {
-          el.appendChild(createHalfElement(tile.high));
-          el.appendChild(createHalfElement(tile.low));
-        } else {
-          el.appendChild(createHalfElement(tile.low));
-          el.appendChild(createHalfElement(tile.high));
-        }
+      if (placement.flipped) {
+        el.appendChild(createHalfElement(tile.high));
+        el.appendChild(createHalfElement(tile.low));
       } else {
-        // Right side: the matching side faces left (inward)
-        if (placement.flipped) {
-          el.appendChild(createHalfElement(tile.high));
-          el.appendChild(createHalfElement(tile.low));
-        } else {
-          el.appendChild(createHalfElement(tile.low));
-          el.appendChild(createHalfElement(tile.high));
-        }
+        el.appendChild(createHalfElement(tile.low));
+        el.appendChild(createHalfElement(tile.high));
       }
     }
 
@@ -458,15 +525,13 @@
   function renderBoard() {
     els.board.innerHTML = '';
     var boardTiles = engine.hand.board.tiles;
+    if (boardTiles.length === 0) return;
+
     for (var i = 0; i < boardTiles.length; i++) {
-      var tileEl = createBoardTileElement(boardTiles[i]);
-      els.board.appendChild(tileEl);
+      els.board.appendChild(createBoardTileElement(boardTiles[i]));
     }
 
-    // Auto-scroll to see new tiles
-    if (boardTiles.length > 0) {
-      els.boardArea.scrollLeft = (els.boardArea.scrollWidth - els.boardArea.clientWidth) / 2;
-    }
+    els.boardArea.scrollLeft = els.boardArea.scrollWidth;
   }
 
   function renderHumanHand() {

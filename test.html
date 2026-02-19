@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dominos AI Test Harness</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    background: #1a1a2e;
+    color: #e0e0e0;
+    padding: 20px;
+    max-width: 900px;
+    margin: 0 auto;
+  }
+  h1 { color: #f0d060; margin-bottom: 20px; text-align: center; }
+  h2 { color: #f0d060; margin: 20px 0 10px; font-size: 1.2rem; }
+  .controls {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 15px;
+  }
+  button {
+    padding: 8px 18px;
+    background: #16213e;
+    color: #f0d060;
+    border: 2px solid #f0d060;
+    border-radius: 6px;
+    font-size: 0.95rem;
+    cursor: pointer;
+    transition: background 0.2s;
+  }
+  button:hover { background: #0f3460; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  label { display: flex; align-items: center; gap: 6px; color: #ccc; }
+  input[type="number"] {
+    width: 80px;
+    padding: 4px 8px;
+    background: #16213e;
+    color: #e0e0e0;
+    border: 1px solid #444;
+    border-radius: 4px;
+  }
+  #output {
+    background: #0f0f23;
+    border: 1px solid #333;
+    border-radius: 8px;
+    padding: 16px;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 0.85rem;
+    white-space: pre-wrap;
+    max-height: 500px;
+    overflow-y: auto;
+    line-height: 1.5;
+  }
+  .pass { color: #4caf50; }
+  .fail { color: #f44336; }
+  .info { color: #90caf9; }
+  .warn { color: #ffb74d; }
+</style>
+</head>
+<body>
+<h1>Dominos AI Test Harness</h1>
+
+<h2>Self-Play (AI vs AI)</h2>
+<div class="controls">
+  <label>Hands: <input type="number" id="num-hands" value="20" min="1" max="500"></label>
+  <label>Seed: <input type="number" id="seed" value="42" min="1"></label>
+  <button id="btn-selfplay" onclick="runSelfPlay()">Run Self-Play</button>
+</div>
+
+<h2>Puppeteer Scenario Tests</h2>
+<div class="controls">
+  <button id="btn-puppeteer" onclick="runPuppeteerTests()">Run Puppeteer Tests</button>
+</div>
+
+<h2>Performance Benchmark</h2>
+<div class="controls">
+  <label>Hands: <input type="number" id="perf-hands" value="5" min="1" max="50"></label>
+  <button id="btn-perf" onclick="runPerfBenchmark()">Run Benchmark</button>
+</div>
+
+<h2>Output</h2>
+<div id="output"></div>
+
+<script src="game.js"></script>
+<script src="ai.js"></script>
+<script src="test-harness.js"></script>
+</body>
+</html>
