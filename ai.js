@@ -68,7 +68,7 @@
   var CONSPASS_HASH = [xorshift32(), xorshift32()];
 
   // --- Transposition Table (flat typed arrays for cache performance) ---
-  var TT_SIZE = 1 << 18; // 262144 entries (~2.5MB total)
+  var TT_SIZE = 1 << 20; // 1048576 entries (~10MB total)
   var TT_MASK = TT_SIZE - 1;
   var ttHash   = new Int32Array(TT_SIZE);
   var ttDepth  = new Int8Array(TT_SIZE);
@@ -137,9 +137,10 @@
   // --- Search depth by game phase ---
   function getMaxDepth(totalTiles) {
     if (totalTiles <= 10) return 50;  // full solve
-    if (totalTiles <= 14) return 14;
-    if (totalTiles <= 20) return 10;
-    return 8;
+    if (totalTiles <= 14) return 28;  // deep solve
+    if (totalTiles <= 18) return 20;
+    if (totalTiles <= 22) return 16;
+    return 12;
   }
 
   // --- Lightweight helpers (no object allocation in hot path) ---
@@ -372,12 +373,19 @@
         if (humanTiles[i].matches(left)) hL++;
         if (left !== right && humanTiles[i].matches(right)) hR++;
       }
-      suitScore = (aiL + aiR - hL - hR) * W_SUIT;
 
-      // 5. Lock-in bonus: if human has 0 tiles for an end value → huge bonus
-      if (hL === 0 && left !== right) suitScore += W_LOCKIN;
-      if (hR === 0 && left !== right) suitScore += W_LOCKIN;
-      if (hL === 0 && hR === 0) suitScore += W_LOCKIN_BOTH;
+      if (left === right) {
+        // Both ends same value — suit control is doubly important
+        suitScore = (aiL - hL) * W_SUIT * 2;
+        // Human void on this value = locked on both ends
+        if (hL === 0) suitScore += W_LOCKIN * 2 + W_LOCKIN_BOTH;
+      } else {
+        suitScore = (aiL + aiR - hL - hR) * W_SUIT;
+        // 5. Lock-in bonus: if human has 0 tiles for an end value → huge bonus
+        if (hL === 0) suitScore += W_LOCKIN;
+        if (hR === 0) suitScore += W_LOCKIN;
+        if (hL === 0 && hR === 0) suitScore += W_LOCKIN_BOTH;
+      }
     }
 
     // 6. Ghost 13 pressure: human has [0-0] and no 0 on either end
@@ -420,14 +428,14 @@
       // Domino detection (last tile → instant win)
       if (myTiles.length === 1) s += MO_DOMINO;
 
-      // Killer move bonus
+      // Killer move bonus (uses global tile identity, not array index)
+      var tileGlobalIdx = TILE_ID_TO_INDEX[tile.id];
       if (depth >= 0 && depth < MAX_DEPTH_SLOTS &&
-          killerTileId[depth] === tIdx && killerEnd[depth] === end) {
+          killerTileId[depth] === tileGlobalIdx && killerEnd[depth] === end) {
         s += 5000;
       }
 
       // History heuristic bonus
-      var tileGlobalIdx = TILE_ID_TO_INDEX[tile.id];
       var endCode = end + 1; // -1→0, 0→1, 1→2
       s += historyScore[tileGlobalIdx][endCode];
 
@@ -464,9 +472,9 @@
 
   // --- Move ordering enhancements ---
 
-  // Killer moves: 1 killer per depth level (tile index + end code that caused beta cutoff)
+  // Killer moves: 1 killer per depth level (global tile index 0-27 + end code that caused beta cutoff)
   var MAX_DEPTH_SLOTS = 60;
-  var killerTileId = new Int8Array(MAX_DEPTH_SLOTS); // tile index in current hand
+  var killerTileId = new Int8Array(MAX_DEPTH_SLOTS); // global tile index (TILE_ID_TO_INDEX)
   var killerEnd = new Int8Array(MAX_DEPTH_SLOTS);     // end code (-1/0/1)
 
   // History heuristic: historyScore[tileIndex][endCode] updated on beta cutoffs
@@ -489,7 +497,7 @@
   // --- Minimax with Alpha-Beta ---
 
   var nodeCount = 0;
-  var NODE_LIMIT = 1000000;
+  var NODE_LIMIT = 5000000;
 
   // Placement history for Puppeteer detection:
   //   p1Who, p1L, p1R, p1Tile — most recent tile placement
@@ -523,8 +531,8 @@
       }
       // Pass — update hash: flip side, update consPass
       var passHash = hash ^ SIDE_HASH;
-      passHash ^= CONSPASS_HASH[Math.min(consPass, 1)];
-      passHash ^= CONSPASS_HASH[Math.min(newConsPass, 1)];
+      if (consPass > 0) passHash ^= CONSPASS_HASH[Math.min(consPass, 1)];
+      if (newConsPass > 0) passHash ^= CONSPASS_HASH[Math.min(newConsPass, 1)];
       // Placement history unchanged through passes
       return minimax(aiTiles, humanTiles, left, right, !isAI, depth, alpha, beta,
                      newConsPass, p1Who, p1L, p1R, p1Tile, p2Who, p2L, p2R, passHash, ext);
@@ -532,30 +540,25 @@
 
     // Depth limit — check for tactical extension before falling back to static eval
     if (depth <= 0) {
-      // Quiescence: extend if position is "noisy" and extension budget allows
+      // Quiescence: extend only in clearly tactical positions, with tight budget
       var extended = false;
-      if (ext < 4) {
-        var myMoveCount = numMoves; // we already computed this above
-        var oppMoveCount = countMoves(oppTiles, left, right);
-        // Noisy: either side has exactly 1 legal move, or any move forces opponent pass
-        if (myMoveCount === 1 || oppMoveCount === 1) {
+      if (ext < 6) {
+        var myMoveCount = numMoves;
+        // Only extend when current side has exactly 1 forced move (no choice)
+        // or when total tiles is low enough that we're near endgame
+        var totalRemaining = aiTiles.length + humanTiles.length;
+        if (myMoveCount === 1) {
+          // Forced move — always extend (no branching cost)
           extended = true;
-        } else {
-          // Check if any of my moves forces opponent to pass
-          for (var qi = 0; qi < numMoves; qi++) {
-            var qTile = myTiles[moves[qi * 2]];
-            var qEndStr = (moves[qi * 2 + 1] === 0 || moves[qi * 2 + 1] === -1) ? 'left' : 'right';
-            var qEnds = simPlace(left, right, qTile, qEndStr);
-            if (countMoves(oppTiles, qEnds[0], qEnds[1]) === 0) {
-              extended = true;
-              break;
-            }
-          }
+        } else if (totalRemaining <= 8) {
+          // Near endgame — extend to try to solve exactly
+          var oppMoveCount = countMoves(oppTiles, left, right);
+          if (oppMoveCount <= 1) extended = true;
         }
       }
       if (extended) {
-        depth = 2;
-        ext = ext + 2;
+        depth = 1;
+        ext = ext + 1;
       } else {
         return evaluate(aiTiles, humanTiles, left, right);
       }
@@ -576,10 +579,11 @@
       numMoves = moves.length / 2;
     }
 
-    // If TT has a best move, move it to front (highest priority, overrides orderMoves)
+    // If TT has a best move (global tile index), move it to front
     if (ttBestMoveIdx >= 0) {
       for (var mi = 1; mi < numMoves; mi++) {
-        if (moves[mi * 2] === ttBestMoveIdx && moves[mi * 2 + 1] === ttBestMoveEnd) {
+        var miGIdx = TILE_ID_TO_INDEX[myTiles[moves[mi * 2]].id];
+        if (miGIdx === ttBestMoveIdx && moves[mi * 2 + 1] === ttBestMoveEnd) {
           // Swap with position 0
           var tmpI = moves[0], tmpE = moves[1];
           moves[0] = moves[mi * 2];
@@ -607,10 +611,12 @@
         var newEnds = simPlace(left, right, tile, endStr);
         var newAI = removeTile(aiTiles, tIdx);
 
+        var tileGIdx = TILE_ID_TO_INDEX[tile.id];
+
         // Terminal: AI domino
         if (newAI.length === 0) {
           var sc = scoreDomino(true, humanTiles, newEnds[0], newEnds[1]);
-          if (sc > best) { best = sc; bestMoveIdx = tIdx; bestMoveEnd = end; }
+          if (sc > best) { best = sc; bestMoveIdx = tileGIdx; bestMoveEnd = end; }
           if (best > alpha) alpha = best;
           if (beta <= alpha) break;
           continue;
@@ -623,7 +629,7 @@
           var sc = scoreBlockPuppeteer(newAI, humanTiles, newEnds[0], newEnds[1],
                                        who, newEnds[0], newEnds[1], tile,
                                        p1Who, p1L, p1R);
-          if (sc > best) { best = sc; bestMoveIdx = tIdx; bestMoveEnd = end; }
+          if (sc > best) { best = sc; bestMoveIdx = tileGIdx; bestMoveEnd = end; }
           if (best > alpha) alpha = best;
           if (beta <= alpha) break;
           continue;
@@ -632,9 +638,8 @@
         // Incremental hash update for child position:
         // XOR out: tile from AI hand, old left/right ends, side, consPass
         // XOR in:  new left/right ends, flipped side, consPass=0
-        var tileIdx = TILE_ID_TO_INDEX[tile.id];
         var childHash = hash;
-        childHash ^= TILE_HASH[tileIdx][0]; // remove tile from AI hand
+        childHash ^= TILE_HASH[tileGIdx][0]; // remove tile from AI hand
         childHash ^= LEFT_HASH[left === null ? 7 : left]; // old left
         childHash ^= LEFT_HASH[newEnds[0]]; // new left
         childHash ^= RIGHT_HASH[right === null ? 7 : right]; // old right
@@ -645,15 +650,15 @@
         // Recurse — shift placement history: old p1→p2, current→p1
         var sc = minimax(newAI, humanTiles, newEnds[0], newEnds[1], false, depth - 1, alpha, beta,
                          0, who, newEnds[0], newEnds[1], tile, p1Who, p1L, p1R, childHash, ext);
-        if (sc > best) { best = sc; bestMoveIdx = tIdx; bestMoveEnd = end; }
+        if (sc > best) { best = sc; bestMoveIdx = tileGIdx; bestMoveEnd = end; }
         if (best > alpha) alpha = best;
         if (beta <= alpha) {
-          // Beta cutoff — record killer move and update history
+          // Beta cutoff — record killer move (global tile index) and update history
+          var gi = TILE_ID_TO_INDEX[tile.id];
           if (depth >= 0 && depth < MAX_DEPTH_SLOTS) {
-            killerTileId[depth] = tIdx;
+            killerTileId[depth] = gi;
             killerEnd[depth] = end;
           }
-          var gi = TILE_ID_TO_INDEX[tile.id];
           historyScore[gi][end + 1] += depth * depth;
           break;
         }
@@ -669,11 +674,12 @@
         var endStr = (end === 0 || end === -1) ? 'left' : 'right';
         var newEnds = simPlace(left, right, tile, endStr);
         var newHuman = removeTile(humanTiles, tIdx);
+        var tileGIdx = TILE_ID_TO_INDEX[tile.id];
 
         // Terminal: human domino
         if (newHuman.length === 0) {
           var sc = scoreDomino(false, aiTiles, newEnds[0], newEnds[1]);
-          if (sc < best) { best = sc; bestMoveIdx = tIdx; bestMoveEnd = end; }
+          if (sc < best) { best = sc; bestMoveIdx = tileGIdx; bestMoveEnd = end; }
           if (best < beta) beta = best;
           if (beta <= alpha) break;
           continue;
@@ -685,16 +691,15 @@
           var sc = scoreBlockPuppeteer(aiTiles, newHuman, newEnds[0], newEnds[1],
                                        who, newEnds[0], newEnds[1], tile,
                                        p1Who, p1L, p1R);
-          if (sc < best) { best = sc; bestMoveIdx = tIdx; bestMoveEnd = end; }
+          if (sc < best) { best = sc; bestMoveIdx = tileGIdx; bestMoveEnd = end; }
           if (best < beta) beta = best;
           if (beta <= alpha) break;
           continue;
         }
 
         // Incremental hash update for child position:
-        var tileIdx = TILE_ID_TO_INDEX[tile.id];
         var childHash = hash;
-        childHash ^= TILE_HASH[tileIdx][1]; // remove tile from human hand
+        childHash ^= TILE_HASH[tileGIdx][1]; // remove tile from human hand
         childHash ^= LEFT_HASH[left === null ? 7 : left];
         childHash ^= LEFT_HASH[newEnds[0]];
         childHash ^= RIGHT_HASH[right === null ? 7 : right];
@@ -705,16 +710,15 @@
         // Recurse — shift placement history
         var sc = minimax(aiTiles, newHuman, newEnds[0], newEnds[1], true, depth - 1, alpha, beta,
                          0, who, newEnds[0], newEnds[1], tile, p1Who, p1L, p1R, childHash, ext);
-        if (sc < best) { best = sc; bestMoveIdx = tIdx; bestMoveEnd = end; }
+        if (sc < best) { best = sc; bestMoveIdx = tileGIdx; bestMoveEnd = end; }
         if (best < beta) beta = best;
         if (beta <= alpha) {
-          // Alpha cutoff (from minimizer's perspective) — record killer and history
+          // Alpha cutoff (from minimizer's perspective) — record killer (global tile index) and history
           if (depth >= 0 && depth < MAX_DEPTH_SLOTS) {
-            killerTileId[depth] = tIdx;
+            killerTileId[depth] = tileGIdx;
             killerEnd[depth] = end;
           }
-          var gi = TILE_ID_TO_INDEX[tile.id];
-          historyScore[gi][end + 1] += depth * depth;
+          historyScore[tileGIdx][end + 1] += depth * depth;
           break;
         }
       }
@@ -799,11 +803,12 @@
       var numMoves = rootMoves.length / 2;
 
       var bestMove = legalMoves[0];
-      var TIME_BUDGET = 400; // milliseconds
+      var TIME_BUDGET = 2000; // milliseconds
       var startTime = Date.now();
+      var prevScore = 0; // for aspiration windows
 
-      // Iterative deepening loop: depth 2, 4, 6, ... up to ceiling
-      for (var iterDepth = 2; iterDepth <= depthCeiling; iterDepth += 2) {
+      // Iterative deepening loop: depth 1, 2, 3, ... up to ceiling
+      for (var iterDepth = 1; iterDepth <= depthCeiling; iterDepth++) {
         nodeCount = 0;
 
         // Re-order root moves using TT PV from previous iteration + killers/history
@@ -812,11 +817,12 @@
           orderedMoves = orderMoves(rootMoves, aiTiles, humanTiles, left, right, true, iterDepth);
         }
 
-        // Check TT for PV move from previous iteration — move it to front
+        // Check TT for PV move from previous iteration — move it to front (uses global tile index)
         var pvHit = ttProbe(rootHash, 0, -100000, 100000);
         if (pvHit && pvHit.bestIdx >= 0) {
           for (var mi = 1; mi < numMoves; mi++) {
-            if (orderedMoves[mi * 2] === pvHit.bestIdx && orderedMoves[mi * 2 + 1] === pvHit.bestEnd) {
+            var pvGIdx = TILE_ID_TO_INDEX[aiTiles[orderedMoves[mi * 2]].id];
+            if (pvGIdx === pvHit.bestIdx && orderedMoves[mi * 2 + 1] === pvHit.bestEnd) {
               var tmpI = orderedMoves[0], tmpE = orderedMoves[1];
               orderedMoves[0] = orderedMoves[mi * 2];
               orderedMoves[1] = orderedMoves[mi * 2 + 1];
@@ -827,79 +833,117 @@
           }
         }
 
-        var alpha = -100000;
-        var beta = 100000;
+        // Aspiration window: use narrow window around previous score (skip for depth 1)
+        var ASP_WINDOW = 30;
+        var alpha, beta;
+        if (iterDepth <= 1) {
+          alpha = -100000;
+          beta = 100000;
+        } else {
+          alpha = prevScore - ASP_WINDOW;
+          beta = prevScore + ASP_WINDOW;
+        }
+
         var iterBestScore = -100000;
         var iterBestMove = null;
         var iterComplete = true;
+        var aspFailed = false;
 
-        for (var i = 0; i < numMoves; i++) {
-          var tIdx = orderedMoves[i * 2];
-          var end = orderedMoves[i * 2 + 1];
-          var tile = aiTiles[tIdx];
-          var endStr = (end === 0 || end === -1) ? 'left' : 'right';
-          var newEnds = simPlace(left, right, tile, endStr);
-          var newAI = removeTile(aiTiles, tIdx);
+        // Aspiration search with re-search on fail
+        for (var aspRetry = 0; aspRetry < 3; aspRetry++) {
+          iterBestScore = -100000;
+          iterBestMove = null;
+          iterComplete = true;
+          var curAlpha = alpha;
 
-          var score;
+          for (var i = 0; i < numMoves; i++) {
+            var tIdx = orderedMoves[i * 2];
+            var end = orderedMoves[i * 2 + 1];
+            var tile = aiTiles[tIdx];
+            var endStr = (end === 0 || end === -1) ? 'left' : 'right';
+            var newEnds = simPlace(left, right, tile, endStr);
+            var newAI = removeTile(aiTiles, tIdx);
 
-          // Terminal: AI domino
-          if (newAI.length === 0) {
-            score = scoreDomino(true, humanTiles, newEnds[0], newEnds[1]);
+            var score;
+
+            // Terminal: AI domino
+            if (newAI.length === 0) {
+              score = scoreDomino(true, humanTiles, newEnds[0], newEnds[1]);
+            }
+            // Terminal: immediate lock — Puppeteer-aware
+            else if (countMoves(humanTiles, newEnds[0], newEnds[1]) === 0 &&
+                     countMoves(newAI, newEnds[0], newEnds[1]) === 0) {
+              score = scoreBlockPuppeteer(newAI, humanTiles, newEnds[0], newEnds[1],
+                                          1, newEnds[0], newEnds[1], tile,
+                                          p1Who, p1L, p1R);
+            }
+            // Recurse
+            else {
+              var tileIdx = TILE_ID_TO_INDEX[tile.id];
+              var childHash = rootHash;
+              childHash ^= TILE_HASH[tileIdx][0];
+              childHash ^= LEFT_HASH[left === null ? 7 : left];
+              childHash ^= LEFT_HASH[newEnds[0]];
+              childHash ^= RIGHT_HASH[right === null ? 7 : right];
+              childHash ^= RIGHT_HASH[newEnds[1]];
+              childHash ^= SIDE_HASH;
+
+              score = minimax(newAI, humanTiles, newEnds[0], newEnds[1], false, iterDepth - 1, curAlpha, beta,
+                              0, 1, newEnds[0], newEnds[1], tile, p1Who, p1L, p1R, childHash, 0);
+            }
+
+            if (score > iterBestScore) {
+              iterBestScore = score;
+              iterBestMove = this.findLegalMove(legalMoves, tile, endStr);
+            }
+            if (score > curAlpha) curAlpha = score;
+
+            // Check if NODE_LIMIT hit during this iteration
+            if (nodeCount >= NODE_LIMIT) {
+              iterComplete = false;
+              break;
+            }
           }
-          // Terminal: immediate lock — Puppeteer-aware
-          else if (countMoves(humanTiles, newEnds[0], newEnds[1]) === 0 &&
-                   countMoves(newAI, newEnds[0], newEnds[1]) === 0) {
-            score = scoreBlockPuppeteer(newAI, humanTiles, newEnds[0], newEnds[1],
-                                        1, newEnds[0], newEnds[1], tile,
-                                        p1Who, p1L, p1R);
-          }
-          // Recurse
-          else {
-            var tileIdx = TILE_ID_TO_INDEX[tile.id];
-            var childHash = rootHash;
-            childHash ^= TILE_HASH[tileIdx][0];
-            childHash ^= LEFT_HASH[left === null ? 7 : left];
-            childHash ^= LEFT_HASH[newEnds[0]];
-            childHash ^= RIGHT_HASH[right === null ? 7 : right];
-            childHash ^= RIGHT_HASH[newEnds[1]];
-            childHash ^= SIDE_HASH;
 
-            score = minimax(newAI, humanTiles, newEnds[0], newEnds[1], false, iterDepth - 1, alpha, beta,
-                            0, 1, newEnds[0], newEnds[1], tile, p1Who, p1L, p1R, childHash, 0);
+          // Check aspiration window failures
+          if (iterComplete && iterBestScore <= alpha) {
+            // Fail low — widen window downward and re-search
+            alpha = -100000;
+            aspFailed = true;
+            continue;
           }
-
-          if (score > iterBestScore) {
-            iterBestScore = score;
-            iterBestMove = this.findLegalMove(legalMoves, tile, endStr);
+          if (iterComplete && iterBestScore >= beta) {
+            // Fail high — widen window upward and re-search
+            beta = 100000;
+            aspFailed = true;
+            continue;
           }
-          if (score > alpha) alpha = score;
-
-          // Check if NODE_LIMIT hit during this iteration
-          if (nodeCount >= NODE_LIMIT) {
-            iterComplete = false;
-            break;
-          }
+          break; // Search within window succeeded
         }
 
-        // Only update best move if this iteration completed fully
+        // Update best move: use completed iterations always, partial iterations
+        // only if the partial best matches the previous best (PV confirmation)
+        // or if it found a clearly winning move (terminal score)
         if (iterComplete && iterBestMove) {
           bestMove = iterBestMove;
-        } else if (iterBestMove && !bestMove) {
-          bestMove = iterBestMove; // use partial result only if no prior result
+          prevScore = iterBestScore;
+        } else if (iterBestMove) {
+          // Partial iteration: use result if it confirms PV or finds a forced win
+          if (iterBestMove === bestMove || iterBestScore > 500) {
+            bestMove = iterBestMove;
+          }
         }
 
-        // Store root position in TT for PV reuse in next iteration
+        // Store root position in TT for PV reuse in next iteration (global tile index)
         if (iterComplete) {
-          // Find tIdx/end of best move for TT storage
           for (var si = 0; si < numMoves; si++) {
             var sTile = aiTiles[orderedMoves[si * 2]];
             var sEnd = orderedMoves[si * 2 + 1];
             var sEndStr = (sEnd === 0 || sEnd === -1) ? 'left' : 'right';
             var sLM = this.findLegalMove(legalMoves, sTile, sEndStr);
             if (sLM === bestMove) {
-              ttStore(rootHash, iterDepth, TT_EXACT, iterBestScore,
-                      orderedMoves[si * 2], orderedMoves[si * 2 + 1]);
+              var sGIdx = TILE_ID_TO_INDEX[sTile.id];
+              ttStore(rootHash, iterDepth, TT_EXACT, iterBestScore, sGIdx, sEnd);
               break;
             }
           }
@@ -910,9 +954,9 @@
           break;
         }
 
-        // Time check: if we've used > 60% of budget, don't start next iteration
+        // Time check: if we've used > 50% of budget, don't start next iteration
         var elapsed = Date.now() - startTime;
-        if (elapsed > TIME_BUDGET * 0.6) {
+        if (elapsed > TIME_BUDGET * 0.5) {
           break;
         }
       }
