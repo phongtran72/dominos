@@ -1,65 +1,155 @@
 // ============================================================
-// ai.js — AI Decision Making
+// ai.js — AI Decision Making (Bitboard Engine)
 //   Easy: random legal move
 //   Hard: minimax with alpha-beta pruning (perfect information)
 //
 // Since all 28 tiles are dealt (14 each, no boneyard), the AI
 // knows both hands. This is a perfect-information game from the
 // AI's perspective — no probability needed, just search.
+//
+// Uses 28-bit integer bitmasks for hands, make/unmake with XOR,
+// pre-computed lookup tables, and zero allocation in the hot path.
 // ============================================================
 
 (function (D) {
   'use strict';
 
-  // --- Configurable evaluation weights ---
-  // Eval function weights (used in evaluate())
-  var W_PIP         = 2;     // pip advantage multiplier
-  var W_MOBILITY    = 4;     // mobility advantage multiplier
-  var W_TILE        = 5;     // tile count advantage multiplier
-  var W_SUIT        = 3;     // suit control at board ends multiplier
-  var W_LOCKIN      = 8;     // bonus when opponent void on one end
-  var W_LOCKIN_BOTH = 15;    // bonus when opponent void on both ends
-  var W_GHOST       = 10;    // ghost 13 pressure value
-  var W_DOUBLE      = 0.5;   // double liability multiplier
+  // =====================================================================
+  // TILE INDEXING: double-six set, 28 tiles
+  // Index assignment: i=0..6, j=i..6 => index = sum(7..7-i+1) + (j-i)
+  // Matches the existing TILE_ID_TO_INDEX scheme.
+  // =====================================================================
 
-  // Move ordering weights (used in orderMoves())
-  var MO_DOMINO     = 1000;  // last-tile domino bonus
-  var MO_DOUBLE     = 12;    // doubles disposal priority
-  var MO_PIP_MULT   = 1.5;   // high-pip shedding multiplier
-  var MO_FORCE_PASS = 25;    // forces opponent pass bonus
-  var MO_GHOST      = 15;    // ghost 13 exploitation bonus
+  var TILE_LOW = new Int8Array(28);
+  var TILE_HIGH = new Int8Array(28);
+  var TILE_PIPS = new Int8Array(28);
+  var TILE_IS_DOUBLE = new Uint8Array(28);
 
-  // --- Zobrist hashing setup ---
-  // Seeded xorshift32 PRNG for deterministic hash values
+  // Map string id "i-j" to index 0-27
+  var TILE_ID_TO_INDEX = {};
+
+  // SUIT_MASK[v] = bitmask of all tiles that contain pip value v (0-6)
+  var SUIT_MASK = new Int32Array(7);
+
+  // Bit mask of all doubles
+  var DOUBLE_MASK = 0;
+
+  // Bit position of [0|0]
+  var TILE_00_BIT = 0;
+
+  // Build lookup tables
+  (function () {
+    var idx = 0;
+    for (var i = 0; i <= 6; i++) {
+      for (var j = i; j <= 6; j++) {
+        TILE_LOW[idx] = i;
+        TILE_HIGH[idx] = j;
+        TILE_PIPS[idx] = i + j;
+        TILE_IS_DOUBLE[idx] = (i === j) ? 1 : 0;
+        TILE_ID_TO_INDEX[i + '-' + j] = idx;
+
+        SUIT_MASK[i] |= (1 << idx);
+        if (i !== j) SUIT_MASK[j] |= (1 << idx);
+
+        if (i === j) DOUBLE_MASK |= (1 << idx);
+        if (i === 0 && j === 0) TILE_00_BIT = 1 << idx;
+
+        idx++;
+      }
+    }
+  })();
+
+  // =====================================================================
+  // PRECOMPUTED: new board end after placing tile on left/right
+  // NEW_END_LEFT[tileIdx * 8 + matchVal] = new left end
+  // NEW_END_RIGHT[tileIdx * 8 + matchVal] = new right end
+  // matchVal 0-6 = current board end value, 7 = empty board
+  // =====================================================================
+
+  var NEW_END_LEFT = new Int8Array(28 * 8);
+  var NEW_END_RIGHT = new Int8Array(28 * 8);
+
+  (function () {
+    for (var t = 0; t < 28; t++) {
+      var lo = TILE_LOW[t], hi = TILE_HIGH[t];
+      for (var v = 0; v <= 6; v++) {
+        // Placing on LEFT end: tile.high matches leftEnd => new left = tile.low
+        //                      tile.low  matches leftEnd => new left = tile.high
+        if (hi === v) {
+          NEW_END_LEFT[t * 8 + v] = lo;
+        } else if (lo === v) {
+          NEW_END_LEFT[t * 8 + v] = hi;
+        } else {
+          NEW_END_LEFT[t * 8 + v] = -1; // illegal
+        }
+        // Placing on RIGHT end: tile.low matches rightEnd => new right = tile.high
+        //                       tile.high matches rightEnd => new right = tile.low
+        if (lo === v) {
+          NEW_END_RIGHT[t * 8 + v] = hi;
+        } else if (hi === v) {
+          NEW_END_RIGHT[t * 8 + v] = lo;
+        } else {
+          NEW_END_RIGHT[t * 8 + v] = -1; // illegal
+        }
+      }
+      // Empty board (v=7): first tile => left=low, right=high
+      NEW_END_LEFT[t * 8 + 7] = lo;
+      NEW_END_RIGHT[t * 8 + 7] = hi;
+    }
+  })();
+
+  // =====================================================================
+  // POPCOUNT (Hamming weight) for 28-bit integers
+  // =====================================================================
+
+  function popcount(x) {
+    x = x - ((x >> 1) & 0x55555555);
+    x = (x & 0x33333333) + ((x >> 2) & 0x33333333);
+    x = (x + (x >> 4)) & 0x0f0f0f0f;
+    return (x * 0x01010101) >> 24;
+  }
+
+  // =====================================================================
+  // EVALUATION WEIGHTS
+  // =====================================================================
+
+  var W_PIP         = 2;
+  var W_MOBILITY    = 4;
+  var W_TILE        = 5;
+  var W_SUIT        = 3;
+  var W_LOCKIN      = 8;
+  var W_LOCKIN_BOTH = 15;
+  var W_GHOST       = 10;
+  var W_DOUBLE      = 0.5;
+
+  // Move ordering weights
+  var MO_DOMINO     = 1000;
+  var MO_DOUBLE     = 12;
+  var MO_PIP_MULT   = 1.5;
+  var MO_FORCE_PASS = 25;
+  var MO_GHOST      = 15;
+
+  // =====================================================================
+  // ZOBRIST HASHING
+  // =====================================================================
+
   var zobristSeed = 0x12345678;
   function xorshift32() {
     zobristSeed ^= zobristSeed << 13;
     zobristSeed ^= zobristSeed >>> 17;
     zobristSeed ^= zobristSeed << 5;
-    return zobristSeed >>> 0; // unsigned
+    return zobristSeed >>> 0;
   }
 
-  // Map tile id strings to indices 0-27 for array lookups
-  var TILE_ID_TO_INDEX = {};
-  (function () {
-    var idx = 0;
-    for (var i = 0; i <= 6; i++) {
-      for (var j = i; j <= 6; j++) {
-        TILE_ID_TO_INDEX[i + '-' + j] = idx++;
-      }
-    }
-  })();
-
-  // Pre-compute Zobrist hash values
   // TILE_HASH[tileIndex][hand]: hand 0=AI, 1=Human
   var TILE_HASH = new Array(28);
   for (var ti = 0; ti < 28; ti++) {
     TILE_HASH[ti] = [xorshift32(), xorshift32()];
   }
-  // LEFT_HASH[value]: board left end 0-6, 7=null
+  // LEFT_HASH[value]: board left end 0-6, 7=empty
   var LEFT_HASH = new Array(8);
   for (var li = 0; li < 8; li++) LEFT_HASH[li] = xorshift32();
-  // RIGHT_HASH[value]: board right end 0-6, 7=null
+  // RIGHT_HASH[value]: board right end 0-6, 7=empty
   var RIGHT_HASH = new Array(8);
   for (var ri = 0; ri < 8; ri++) RIGHT_HASH[ri] = xorshift32();
   // Side-to-move hash
@@ -67,27 +157,29 @@
   // Consecutive pass hash (0 or 1)
   var CONSPASS_HASH = [xorshift32(), xorshift32()];
 
-  // --- Transposition Table (flat typed arrays for cache performance) ---
-  var TT_SIZE = 1 << 20; // 1048576 entries (~10MB total)
+  // =====================================================================
+  // TRANSPOSITION TABLE (flat typed arrays for cache performance)
+  // =====================================================================
+
+  var TT_SIZE = 1 << 22; // 4,194,304 entries (~40MB total)
   var TT_MASK = TT_SIZE - 1;
   var ttHash   = new Int32Array(TT_SIZE);
   var ttDepth  = new Int8Array(TT_SIZE);
   var ttFlag   = new Uint8Array(TT_SIZE);  // 0=empty, 1=EXACT, 2=LOWER, 3=UPPER
   var ttValue  = new Int16Array(TT_SIZE);
-  var ttBestIdx = new Int8Array(TT_SIZE);  // best move tile index
-  var ttBestEnd = new Int8Array(TT_SIZE);  // best move end code
+  var ttBestIdx = new Int8Array(TT_SIZE);
+  var ttBestEnd = new Int8Array(TT_SIZE);
 
   var TT_EXACT = 1, TT_LOWER = 2, TT_UPPER = 3;
 
   function ttClear() {
-    // Only need to clear flags — 0 means empty
     for (var i = 0; i < TT_SIZE; i++) ttFlag[i] = 0;
   }
 
   function ttProbe(hash, depth, alpha, beta) {
     var idx = (hash & TT_MASK) >>> 0;
-    if (ttFlag[idx] === 0) return null; // empty slot
-    if ((ttHash[idx] | 0) !== (hash | 0)) return null; // hash mismatch
+    if (ttFlag[idx] === 0) return null;
+    if ((ttHash[idx] | 0) !== (hash | 0)) return null;
 
     var result = { bestIdx: ttBestIdx[idx], bestEnd: ttBestEnd[idx], score: null };
 
@@ -107,7 +199,6 @@
 
   function ttStore(hash, depth, flag, value, bestIdx, bestEnd) {
     var idx = (hash & TT_MASK) >>> 0;
-    // Always-replace if: empty, or new depth >= stored depth
     if (ttFlag[idx] === 0 || depth >= ttDepth[idx]) {
       ttHash[idx] = hash | 0;
       ttDepth[idx] = depth;
@@ -118,374 +209,321 @@
     }
   }
 
-  // Compute initial Zobrist hash for the root position
-  function computeHash(aiTiles, humanTiles, left, right, isAI, consPass) {
-    var h = 0;
-    for (var i = 0; i < aiTiles.length; i++) {
-      h ^= TILE_HASH[TILE_ID_TO_INDEX[aiTiles[i].id]][0];
-    }
-    for (var i = 0; i < humanTiles.length; i++) {
-      h ^= TILE_HASH[TILE_ID_TO_INDEX[humanTiles[i].id]][1];
-    }
-    h ^= LEFT_HASH[left === null ? 7 : left];
-    h ^= RIGHT_HASH[right === null ? 7 : right];
-    if (!isAI) h ^= SIDE_HASH;
-    if (consPass > 0) h ^= CONSPASS_HASH[Math.min(consPass, 1)];
-    return h;
-  }
+  // =====================================================================
+  // GLOBAL MUTABLE STATE (make/unmake pattern)
+  // =====================================================================
 
-  // --- Search depth by game phase ---
-  function getMaxDepth(totalTiles) {
-    if (totalTiles <= 10) return 50;  // full solve
-    if (totalTiles <= 14) return 28;  // deep solve
-    if (totalTiles <= 18) return 20;
-    if (totalTiles <= 22) return 16;
-    return 12;
-  }
+  var gAiHand = 0;       // 28-bit bitmask
+  var gHumanHand = 0;    // 28-bit bitmask
+  var gLeft = 7;         // board left end (7=empty)
+  var gRight = 7;        // board right end (7=empty)
+  var gHash = 0;         // Zobrist hash
+  var gPly = 0;          // current ply
+  var gConsPass = 0;     // consecutive passes
 
-  // --- Lightweight helpers (no object allocation in hot path) ---
+  // Puppeteer tracking
+  var gP1Who = -1, gP1L = 0, gP1R = 0, gP1Tile = -1;
+  var gP2Who = -1, gP2L = 0, gP2R = 0;
 
-  // Simulate placing tile on board, return new [leftEnd, rightEnd]
-  function simPlace(left, right, tile, end) {
-    if (left === null) {
-      // First tile on empty board
-      return [tile.low, tile.high];
+  // =====================================================================
+  // PER-PLY MOVE STACKS (pre-allocated, zero allocation)
+  // =====================================================================
+
+  var MAX_PLY = 64;
+  // Each ply can have at most ~14 moves (actually fewer in practice)
+  // We use 28 slots per ply to be safe
+  var MOVE_BUF_SIZE = MAX_PLY * 28;
+  var MOVE_TILE_BUF = new Int8Array(MOVE_BUF_SIZE);
+  var MOVE_END_BUF  = new Int8Array(MOVE_BUF_SIZE);
+  var MOVE_SCORE_BUF = new Float64Array(MOVE_BUF_SIZE); // for ordering
+
+  // =====================================================================
+  // MOVE GENERATION (bitboard)
+  // =====================================================================
+
+  function generateMoves(hand, left, right, ply) {
+    var base = ply * 28;
+    var count = 0;
+
+    if (left === 7) {
+      // Empty board: any tile is legal (play to 'left')
+      var h = hand;
+      while (h) {
+        var bit = h & (-h);
+        var idx = 31 - Math.clz32(bit);
+        MOVE_TILE_BUF[base + count] = idx;
+        MOVE_END_BUF[base + count] = 0; // left
+        count++;
+        h ^= bit;
+      }
+      return count;
     }
-    if (end === 'left') {
-      if (tile.high === left) return [tile.low, right];
-      return [tile.high, right];
+
+    // Left-matching tiles
+    var leftMask = SUIT_MASK[left] & hand;
+    var rightMask = SUIT_MASK[right] & hand;
+
+    var m = leftMask;
+    while (m) {
+      var bit = m & (-m);
+      var idx = 31 - Math.clz32(bit);
+      MOVE_TILE_BUF[base + count] = idx;
+      MOVE_END_BUF[base + count] = 0; // left
+      count++;
+      m ^= bit;
+    }
+
+    // Right-matching tiles
+    if (left !== right) {
+      m = rightMask;
+      while (m) {
+        var bit = m & (-m);
+        var idx = 31 - Math.clz32(bit);
+        MOVE_TILE_BUF[base + count] = idx;
+        MOVE_END_BUF[base + count] = 1; // right
+        count++;
+        m ^= bit;
+      }
     } else {
-      if (tile.low === right) return [left, tile.high];
-      return [left, tile.low];
-    }
-  }
-
-  // Get legal moves for a tile array given board ends [left, right]
-  function getMoves(tiles, left, right) {
-    var moves = [];
-    if (left === null) {
-      for (var i = 0; i < tiles.length; i++) {
-        moves.push(i, -1); // index, end (-1 = left for empty board)
-      }
-      return moves;
-    }
-    for (var i = 0; i < tiles.length; i++) {
-      var t = tiles[i];
-      var canL = (t.low === left || t.high === left);
-      var canR = (t.low === right || t.high === right);
-      if (canL) moves.push(i, 0); // 0 = left
-      if (canR && left !== right) {
-        moves.push(i, 1); // 1 = right
-      } else if (canR && left === right && !canL) {
-        moves.push(i, 1);
+      // Same ends: only right moves for tiles not already counted in leftMask
+      m = rightMask & ~leftMask;
+      while (m) {
+        var bit = m & (-m);
+        var idx = 31 - Math.clz32(bit);
+        MOVE_TILE_BUF[base + count] = idx;
+        MOVE_END_BUF[base + count] = 1; // right
+        count++;
+        m ^= bit;
       }
     }
-    return moves;
+
+    return count;
   }
 
-  // Count legal moves (just the count, no allocation)
-  function countMoves(tiles, left, right) {
-    if (left === null) return tiles.length;
-    var c = 0;
-    for (var i = 0; i < tiles.length; i++) {
-      var t = tiles[i];
-      var canL = (t.low === left || t.high === left);
-      var canR = (t.low === right || t.high === right);
-      if (canL) c++;
-      if (canR && left !== right) c++;
-      else if (canR && left === right && !canL) c++;
+  // Count legal moves (no allocation, just popcount)
+  function countMovesBB(hand, left, right) {
+    if (left === 7) return popcount(hand);
+    var leftMask = SUIT_MASK[left] & hand;
+    var rightMask = SUIT_MASK[right] & hand;
+    if (left === right) {
+      return popcount(leftMask);
     }
-    return c;
+    // leftMask | rightMask gives all playable tiles (some may overlap)
+    return popcount(leftMask | rightMask);
   }
 
-  // Pip total with Ghost 13
-  function totalPips(tiles, left, right) {
+  // =====================================================================
+  // PIP COUNTING (bitboard)
+  // =====================================================================
+
+  function totalPipsBB(hand, left, right) {
     var sum = 0;
-    for (var i = 0; i < tiles.length; i++) {
-      var t = tiles[i];
-      if (t.low === 0 && t.high === 0 && left !== 0 && right !== 0) {
+    var h = hand;
+    while (h) {
+      var bit = h & (-h);
+      var idx = 31 - Math.clz32(bit);
+      // Ghost 13: [0-0] counts as 13 when unplayable (no 0 on either end)
+      if (idx === 0 && left !== 0 && right !== 0 && left !== 7) {
+        // idx 0 is tile [0|0] (first tile in our indexing)
         sum += 13;
       } else {
-        sum += t.low + t.high;
+        sum += TILE_PIPS[idx];
       }
+      h ^= bit;
     }
     return sum;
   }
 
-  // Remove tile at index, return new array
-  function removeTile(tiles, idx) {
-    var a = new Array(tiles.length - 1);
-    for (var i = 0, j = 0; i < tiles.length; i++) {
-      if (i !== idx) a[j++] = tiles[i];
-    }
-    return a;
-  }
+  // Note: TILE_00_BIT corresponds to tile index 0 which is [0|0]
+  // So checking (hand & 1) checks for [0|0] in hand
 
-  // Does tile array contain [0-0]?
-  function has00(tiles) {
-    for (var i = 0; i < tiles.length; i++) {
-      if (tiles[i].low === 0 && tiles[i].high === 0) return true;
-    }
-    return false;
-  }
+  // =====================================================================
+  // TERMINAL SCORING (from AI's perspective, positive = good)
+  // =====================================================================
 
-  // --- Terminal scoring (from AI's perspective, positive = good) ---
-
-  function scoreDomino(winnerIsAI, loserTiles, left, right) {
-    var pips = totalPips(loserTiles, left, right);
+  function scoreDominoBB(winnerIsAI, loserHand, left, right) {
+    var pips = totalPipsBB(loserHand, left, right);
     return winnerIsAI ? pips : -pips;
   }
 
-  // Puppeteer detection: mirrors game.js checkPuppeteer() logic.
-  // Checks if the second-to-last placer (p2) forced the last placer (p1)
-  // into a single legal tile where every placement of that tile blocks.
-  //
-  // p1Who/p1L/p1R/p1Tile: last placement info (who, board-ends-after, tile played)
-  // p2Who/p2L/p2R: second-to-last placement info (who, board-ends-after)
-  // lastPlacerTiles: the last placer's current hand (AFTER their move)
-  // otherTiles: the other player's current hand
-  //
-  // Returns the aggressor: 1 = AI, 0 = human
-  function detectAggressor(p1Who, p1L, p1R, p1Tile, p2Who, p2L, p2R,
-                           lastPlacerTiles, otherTiles) {
-    // Need 2 placements to check Puppeteer
-    if (p2Who === -1 || p1Tile === null) return p1Who;
+  // =====================================================================
+  // PUPPETEER / AGGRESSOR DETECTION (bitboard)
+  // =====================================================================
 
-    // Reconstruct the last placer's hand BEFORE their move
-    // (current hand + the tile they played)
-    var forcedHand = new Array(lastPlacerTiles.length + 1);
-    for (var i = 0; i < lastPlacerTiles.length; i++) {
-      forcedHand[i] = lastPlacerTiles[i];
-    }
-    forcedHand[lastPlacerTiles.length] = p1Tile;
+  // Detect aggressor for block scoring.
+  // p1Who/p1L/p1R/p1Tile: most recent placement
+  // p2Who/p2L/p2R: second-most-recent placement
+  // Returns: aggressor (1=AI, 0=human)
+  function detectAggressorBB(p1Who, p1L, p1R, p1Tile, p2Who, p2L, p2R,
+                              lastPlacerHand, otherHand) {
+    if (p2Who === -1 || p1Tile === -1) return p1Who;
 
-    // Board ends after puppeteer's move (before the forced move) = p2L, p2R
-    // Count unique legal tiles the forced player had at that board state
-    var uniqueCount = 0;
-    var theTile = null;
-    for (var i = 0; i < forcedHand.length; i++) {
-      var t = forcedHand[i];
-      var canPlay = (t.low === p2L || t.high === p2L ||
-                     t.low === p2R || t.high === p2R);
-      if (canPlay) {
-        // Deduplicate: check if we already counted this tile
-        // (same tile object won't appear twice, but tiles with same values could
-        //  in theory — in practice each tile is unique in a domino set)
-        if (theTile === null || theTile !== t) {
-          if (uniqueCount === 0) {
-            theTile = t;
-            uniqueCount = 1;
-          } else if (uniqueCount === 1 && theTile !== t) {
-            // More than 1 unique legal tile — Puppeteer does not apply
-            return p1Who;
-          }
-        }
-      }
+    // Reconstruct forced player's hand before their move (add back p1Tile)
+    var forcedHand = lastPlacerHand | (1 << p1Tile);
+
+    // Board ends after puppeteer's move = p2L, p2R
+    // Count unique legal tiles forced player had
+    var legalMask = 0;
+    if (p2L === 7) {
+      legalMask = forcedHand;
+    } else {
+      legalMask = (SUIT_MASK[p2L] | SUIT_MASK[p2R]) & forcedHand;
+      if (p2L === p2R) legalMask = SUIT_MASK[p2L] & forcedHand;
     }
 
-    // Must have exactly 1 legal tile
-    if (uniqueCount !== 1) return p1Who;
+    var legalCount = popcount(legalMask);
+    if (legalCount !== 1) return p1Who;
 
-    // Get all legal placements of that tile on the p2 board
-    var canL = (theTile.low === p2L || theTile.high === p2L);
-    var canR = (theTile.low === p2R || theTile.high === p2R);
-    if (p2L === p2R && canL) canR = false; // same end, don't double-count
+    // Exactly 1 legal tile — check if all placements of it cause a block
+    var theTileIdx = 31 - Math.clz32(legalMask & (-legalMask));
+    var lo = TILE_LOW[theTileIdx], hi = TILE_HIGH[theTileIdx];
 
-    // Build hand after forced player plays the tile
-    var forcedHandAfter = lastPlacerTiles; // already has tile removed
+    // What placements are possible?
+    var canL = (lo === p2L || hi === p2L) && p2L !== 7;
+    var canR = (lo === p2R || hi === p2R) && p2R !== 7;
+    if (p2L === 7) { canL = true; canR = false; }
+    if (p2L === p2R && canL) canR = false;
 
-    // Check each placement: does it result in a block?
+    // Hand after forced player plays the tile
+    var forcedHandAfter = lastPlacerHand; // already has tile removed
+
     if (canL) {
-      var newEnds = simPlace(p2L, p2R, theTile, 'left');
-      if (countMoves(otherTiles, newEnds[0], newEnds[1]) > 0 ||
-          countMoves(forcedHandAfter, newEnds[0], newEnds[1]) > 0) {
-        return p1Who; // This placement doesn't block
+      var newL = NEW_END_LEFT[theTileIdx * 8 + (p2L === 7 ? 7 : p2L)];
+      var newR = (p2L === 7) ? NEW_END_RIGHT[theTileIdx * 8 + 7] : p2R;
+      if (countMovesBB(otherHand, newL, newR) > 0 ||
+          countMovesBB(forcedHandAfter, newL, newR) > 0) {
+        return p1Who; // doesn't block
       }
     }
     if (canR) {
-      var newEnds = simPlace(p2L, p2R, theTile, 'right');
-      if (countMoves(otherTiles, newEnds[0], newEnds[1]) > 0 ||
-          countMoves(forcedHandAfter, newEnds[0], newEnds[1]) > 0) {
-        return p1Who; // This placement doesn't block
+      var newR2 = NEW_END_RIGHT[theTileIdx * 8 + p2R];
+      var newL2 = p2L;
+      if (countMovesBB(otherHand, newL2, newR2) > 0 ||
+          countMovesBB(forcedHandAfter, newL2, newR2) > 0) {
+        return p1Who; // doesn't block
       }
     }
 
-    // All placements of the forced tile cause a block → Puppeteer applies
-    // The second-to-last placer (p2) is the aggressor
+    // All placements block => Puppeteer: p2 is aggressor
     return p2Who;
   }
 
-  // Score a block terminal with Puppeteer-aware aggressor detection.
-  // p1Who/p1L/p1R/p1Tile: most recent placement
-  // p2Who/p2L/p2R: second-most-recent placement
-  function scoreBlockPuppeteer(aiTiles, humanTiles, left, right,
-                               p1Who, p1L, p1R, p1Tile, p2Who, p2L, p2R) {
-    // Determine the last placer's tiles and opponent's tiles
-    var lastPlacerTiles = (p1Who === 1) ? aiTiles : humanTiles;
-    var otherTiles = (p1Who === 1) ? humanTiles : aiTiles;
+  // Score a block terminal with Puppeteer-aware aggressor detection
+  function scoreBlockBB() {
+    var lastPlacerHand, otherHand;
+    if (gP1Who === 1) {
+      lastPlacerHand = gAiHand;
+      otherHand = gHumanHand;
+    } else {
+      lastPlacerHand = gHumanHand;
+      otherHand = gAiHand;
+    }
 
-    var aggressor = detectAggressor(p1Who, p1L, p1R, p1Tile, p2Who, p2L, p2R,
-                                    lastPlacerTiles, otherTiles);
+    var aggressor = detectAggressorBB(gP1Who, gP1L, gP1R, gP1Tile,
+                                       gP2Who, gP2L, gP2R,
+                                       lastPlacerHand, otherHand);
 
-    var aiPips = totalPips(aiTiles, left, right);
-    var humanPips = totalPips(humanTiles, left, right);
+    var aiPips = totalPipsBB(gAiHand, gLeft, gRight);
+    var humanPips = totalPipsBB(gHumanHand, gLeft, gRight);
 
     var aggrPips = (aggressor === 1) ? aiPips : humanPips;
     var oppPips = (aggressor === 1) ? humanPips : aiPips;
 
     if (aggrPips <= oppPips) {
-      // Successful block: aggressor wins, scores oppPips * 2
       var pts = oppPips * 2;
       return (aggressor === 1) ? pts : -pts;
     } else {
-      // Failed block: opponent of aggressor wins, scores ALL pips
       var pts = aiPips + humanPips;
       return (aggressor === 1) ? -pts : pts;
     }
   }
 
-  // --- Static evaluation for non-terminal nodes ---
+  // =====================================================================
+  // STATIC EVALUATION (bitboard)
+  // =====================================================================
 
-  function evaluate(aiTiles, humanTiles, left, right) {
-    var aiPips = totalPips(aiTiles, left, right);
-    var humanPips = totalPips(humanTiles, left, right);
+  function evaluateBB() {
+    var left = gLeft, right = gRight;
+    var aiHand = gAiHand, humanHand = gHumanHand;
 
-    // 1. Pip advantage (lower pips = better for AI)
+    var aiPips = totalPipsBB(aiHand, left, right);
+    var humanPips = totalPipsBB(humanHand, left, right);
+
+    // 1. Pip advantage
     var pipScore = (humanPips - aiPips) * W_PIP;
 
-    // 2. Mobility advantage
-    var aiMob = countMoves(aiTiles, left, right);
-    var humanMob = countMoves(humanTiles, left, right);
+    // 2. Mobility
+    var aiMob = countMovesBB(aiHand, left, right);
+    var humanMob = countMovesBB(humanHand, left, right);
     var mobScore = (aiMob - humanMob) * W_MOBILITY;
 
-    // 3. Tile count advantage (fewer AI tiles = closer to domino)
-    var tileScore = (humanTiles.length - aiTiles.length) * W_TILE;
+    // 3. Tile count advantage
+    var aiCount = popcount(aiHand);
+    var humanCount = popcount(humanHand);
+    var tileScore = (humanCount - aiCount) * W_TILE;
 
-    // 4. Suit control at board ends
+    // 4. Suit control
     var suitScore = 0;
-    if (left !== null) {
-      var aiL = 0, aiR = 0, hL = 0, hR = 0;
-      for (var i = 0; i < aiTiles.length; i++) {
-        if (aiTiles[i].matches(left)) aiL++;
-        if (left !== right && aiTiles[i].matches(right)) aiR++;
-      }
-      for (var i = 0; i < humanTiles.length; i++) {
-        if (humanTiles[i].matches(left)) hL++;
-        if (left !== right && humanTiles[i].matches(right)) hR++;
-      }
-
+    if (left !== 7) {
       if (left === right) {
-        // Both ends same value — suit control is doubly important
+        var aiL = popcount(SUIT_MASK[left] & aiHand);
+        var hL = popcount(SUIT_MASK[left] & humanHand);
         suitScore = (aiL - hL) * W_SUIT * 2;
-        // Human void on this value = locked on both ends
         if (hL === 0) suitScore += W_LOCKIN * 2 + W_LOCKIN_BOTH;
       } else {
+        var aiL = popcount(SUIT_MASK[left] & aiHand);
+        var aiR = popcount(SUIT_MASK[right] & aiHand);
+        var hL = popcount(SUIT_MASK[left] & humanHand);
+        var hR = popcount(SUIT_MASK[right] & humanHand);
         suitScore = (aiL + aiR - hL - hR) * W_SUIT;
-        // 5. Lock-in bonus: if human has 0 tiles for an end value → huge bonus
         if (hL === 0) suitScore += W_LOCKIN;
         if (hR === 0) suitScore += W_LOCKIN;
         if (hL === 0 && hR === 0) suitScore += W_LOCKIN_BOTH;
       }
     }
 
-    // 6. Ghost 13 pressure: human has [0-0] and no 0 on either end
+    // 5. Ghost 13 pressure
     var ghost = 0;
-    if (has00(humanTiles) && left !== null && left !== 0 && right !== 0) {
-      ghost = W_GHOST;
-    }
-    // AI has [0-0] and no 0 on ends — bad for AI
-    if (has00(aiTiles) && left !== null && left !== 0 && right !== 0) {
-      ghost -= W_GHOST;
+    if (left !== 7 && left !== 0 && right !== 0) {
+      if (humanHand & TILE_00_BIT) ghost = W_GHOST;
+      if (aiHand & TILE_00_BIT) ghost -= W_GHOST;
     }
 
-    // 7. Double liability: unplayed doubles are risky (only match one suit)
+    // 6. Double liability
     var doublePen = 0;
-    for (var i = 0; i < aiTiles.length; i++) {
-      if (aiTiles[i].isDouble()) doublePen -= (aiTiles[i].pipCount() + 2) * W_DOUBLE;
+    var aiDoubles = aiHand & DOUBLE_MASK;
+    while (aiDoubles) {
+      var bit = aiDoubles & (-aiDoubles);
+      var idx = 31 - Math.clz32(bit);
+      doublePen -= (TILE_PIPS[idx] + 2) * W_DOUBLE;
+      aiDoubles ^= bit;
     }
-    for (var i = 0; i < humanTiles.length; i++) {
-      if (humanTiles[i].isDouble()) doublePen += (humanTiles[i].pipCount() + 2) * W_DOUBLE;
+    var humanDoubles = humanHand & DOUBLE_MASK;
+    while (humanDoubles) {
+      var bit = humanDoubles & (-humanDoubles);
+      var idx = 31 - Math.clz32(bit);
+      doublePen += (TILE_PIPS[idx] + 2) * W_DOUBLE;
+      humanDoubles ^= bit;
     }
 
     return pipScore + mobScore + tileScore + suitScore + ghost + doublePen;
   }
 
-  // --- Move ordering (for alpha-beta efficiency) ---
-  // Returns indices into the moves flat array, sorted best-first.
-  // moves is flat: [tileIdx, end, tileIdx, end, ...]
+  // =====================================================================
+  // MOVE ORDERING
+  // =====================================================================
 
-  function orderMoves(moves, myTiles, oppTiles, left, right, isAI, depth) {
-    var n = moves.length / 2;
-    if (n <= 1) return moves;
+  var MAX_DEPTH_SLOTS = 64;
+  var killerTileId = new Int8Array(MAX_DEPTH_SLOTS);
+  var killerEnd = new Int8Array(MAX_DEPTH_SLOTS);
 
-    var scored = new Array(n);
-    for (var i = 0; i < n; i++) {
-      var tIdx = moves[i * 2];
-      var end = moves[i * 2 + 1];
-      var tile = myTiles[tIdx];
-      var s = 0;
-
-      // Domino detection (last tile → instant win)
-      if (myTiles.length === 1) s += MO_DOMINO;
-
-      // Killer move bonus (uses global tile identity, not array index)
-      var tileGlobalIdx = TILE_ID_TO_INDEX[tile.id];
-      if (depth >= 0 && depth < MAX_DEPTH_SLOTS &&
-          killerTileId[depth] === tileGlobalIdx && killerEnd[depth] === end) {
-        s += 5000;
-      }
-
-      // History heuristic bonus
-      var endCode = end + 1; // -1→0, 0→1, 1→2
-      s += historyScore[tileGlobalIdx][endCode];
-
-      // Doubles first (dispose liability)
-      if (tile.isDouble()) s += MO_DOUBLE;
-
-      // High-pip tiles (shed weight)
-      s += tile.pipCount() * MO_PIP_MULT;
-
-      // Check if this move forces opponent to have no moves
-      var endStr = (end === 0 || end === -1) ? 'left' : 'right';
-      var newEnds = simPlace(left, right, tile, endStr);
-      var oppMob = countMoves(oppTiles, newEnds[0], newEnds[1]);
-      if (oppMob === 0) s += MO_FORCE_PASS;
-
-      // Ghost 13 exploitation
-      if (isAI && has00(oppTiles) && newEnds[0] !== 0 && newEnds[1] !== 0) {
-        s += MO_GHOST;
-      }
-
-      scored[i] = { i: i, s: s };
-    }
-
-    scored.sort(function (a, b) { return b.s - a.s; });
-
-    var ordered = new Array(n * 2);
-    for (var i = 0; i < n; i++) {
-      var oi = scored[i].i;
-      ordered[i * 2] = moves[oi * 2];
-      ordered[i * 2 + 1] = moves[oi * 2 + 1];
-    }
-    return ordered;
-  }
-
-  // --- Move ordering enhancements ---
-
-  // Killer moves: 1 killer per depth level (global tile index 0-27 + end code that caused beta cutoff)
-  var MAX_DEPTH_SLOTS = 60;
-  var killerTileId = new Int8Array(MAX_DEPTH_SLOTS); // global tile index (TILE_ID_TO_INDEX)
-  var killerEnd = new Int8Array(MAX_DEPTH_SLOTS);     // end code (-1/0/1)
-
-  // History heuristic: historyScore[tileIndex][endCode] updated on beta cutoffs
-  // endCode: 0=left(-1), 1=left(0), 2=right(1) → mapped as end+1
   var historyScore = new Array(28);
   for (var hi = 0; hi < 28; hi++) historyScore[hi] = [0, 0, 0];
 
   function clearMoveOrderingData() {
     for (var k = 0; k < MAX_DEPTH_SLOTS; k++) {
       killerTileId[k] = -1;
-      killerEnd[k] = -2; // invalid sentinel
+      killerEnd[k] = -2;
     }
     for (var h = 0; h < 28; h++) {
       historyScore[h][0] = 0;
@@ -494,252 +532,388 @@
     }
   }
 
-  // --- Minimax with Alpha-Beta ---
+  // Sort moves in-place within the ply's buffer region
+  function orderMovesAtPly(ply, numMoves, isAI, depth) {
+    if (numMoves <= 1) return;
+
+    var base = ply * 28;
+    var myHand = isAI ? gAiHand : gHumanHand;
+    var oppHand = isAI ? gHumanHand : gAiHand;
+    var left = gLeft, right = gRight;
+
+    // Score each move
+    for (var i = 0; i < numMoves; i++) {
+      var tIdx = MOVE_TILE_BUF[base + i];
+      var end = MOVE_END_BUF[base + i];
+      var s = 0;
+
+      // Domino detection (last tile => instant win)
+      if (popcount(myHand) === 1) s += MO_DOMINO;
+
+      // Killer move bonus
+      if (depth >= 0 && depth < MAX_DEPTH_SLOTS &&
+          killerTileId[depth] === tIdx && killerEnd[depth] === end) {
+        s += 5000;
+      }
+
+      // History heuristic
+      s += historyScore[tIdx][end + 1];
+
+      // Doubles first
+      if (TILE_IS_DOUBLE[tIdx]) s += MO_DOUBLE;
+
+      // High-pip shedding
+      s += TILE_PIPS[tIdx] * MO_PIP_MULT;
+
+      // Force opponent pass check
+      var newL, newR;
+      if (left === 7) {
+        newL = TILE_LOW[tIdx];
+        newR = TILE_HIGH[tIdx];
+      } else if (end === 0) {
+        newL = NEW_END_LEFT[tIdx * 8 + left];
+        newR = right;
+      } else {
+        newL = left;
+        newR = NEW_END_RIGHT[tIdx * 8 + right];
+      }
+      if (countMovesBB(oppHand, newL, newR) === 0) s += MO_FORCE_PASS;
+
+      // Ghost 13 exploitation
+      if (isAI && (oppHand & TILE_00_BIT) && newL !== 0 && newR !== 0) {
+        s += MO_GHOST;
+      }
+
+      MOVE_SCORE_BUF[base + i] = s;
+    }
+
+    // Simple insertion sort (small N, typically <10)
+    for (var i = 1; i < numMoves; i++) {
+      var scoreI = MOVE_SCORE_BUF[base + i];
+      var tileI = MOVE_TILE_BUF[base + i];
+      var endI = MOVE_END_BUF[base + i];
+      var j = i - 1;
+      while (j >= 0 && MOVE_SCORE_BUF[base + j] < scoreI) {
+        MOVE_SCORE_BUF[base + j + 1] = MOVE_SCORE_BUF[base + j];
+        MOVE_TILE_BUF[base + j + 1] = MOVE_TILE_BUF[base + j];
+        MOVE_END_BUF[base + j + 1] = MOVE_END_BUF[base + j];
+        j--;
+      }
+      MOVE_SCORE_BUF[base + j + 1] = scoreI;
+      MOVE_TILE_BUF[base + j + 1] = tileI;
+      MOVE_END_BUF[base + j + 1] = endI;
+    }
+  }
+
+  // =====================================================================
+  // MINIMAX WITH ALPHA-BETA (bitboard, make/unmake, globals)
+  // =====================================================================
 
   var nodeCount = 0;
-  var NODE_LIMIT = 5000000;
+  var NODE_LIMIT = 20000000; // 20M nodes
+  var timeStart = 0;
+  var TIME_BUDGET = 5000; // 5 seconds
 
-  // Placement history for Puppeteer detection:
-  //   p1Who, p1L, p1R, p1Tile — most recent tile placement
-  //   p2Who, p2L, p2R         — second-most-recent tile placement
-  //   p1Who/p2Who: 1=AI, 0=human, -1=none
-  //   p1L/p1R/p2L/p2R: board ends after that placement
-  //   p1Tile: tile object played in most recent placement (null if none)
-  //   hash: Zobrist hash of current position (incrementally updated)
-  //   ext: extension budget consumed so far (starts 0, max 4)
-  function minimax(aiTiles, humanTiles, left, right, isAI, depth, alpha, beta,
-                   consPass, p1Who, p1L, p1R, p1Tile, p2Who, p2L, p2R, hash, ext) {
+  function minimaxBB(isAI, depth, alpha, beta, ext) {
     nodeCount++;
 
-    // Safety valve
     if (nodeCount >= NODE_LIMIT) {
-      return evaluate(aiTiles, humanTiles, left, right);
+      return evaluateBB();
     }
 
-    var myTiles = isAI ? aiTiles : humanTiles;
-    var oppTiles = isAI ? humanTiles : aiTiles;
-    var moves = getMoves(myTiles, left, right);
-    var numMoves = moves.length / 2;
+    var myHand = isAI ? gAiHand : gHumanHand;
+    var numMoves = generateMoves(myHand, gLeft, gRight, gPly);
 
-    // No legal moves → must pass
+    // --- No legal moves: must pass ---
     if (numMoves === 0) {
-      var newConsPass = consPass + 1;
+      var newConsPass = gConsPass + 1;
       if (newConsPass >= 2) {
-        // Block: both players stuck — use Puppeteer-aware scoring
-        return scoreBlockPuppeteer(aiTiles, humanTiles, left, right,
-                                   p1Who, p1L, p1R, p1Tile, p2Who, p2L, p2R);
+        return scoreBlockBB();
       }
-      // Pass — update hash: flip side, update consPass
-      var passHash = hash ^ SIDE_HASH;
-      if (consPass > 0) passHash ^= CONSPASS_HASH[Math.min(consPass, 1)];
-      if (newConsPass > 0) passHash ^= CONSPASS_HASH[Math.min(newConsPass, 1)];
-      // Placement history unchanged through passes
-      return minimax(aiTiles, humanTiles, left, right, !isAI, depth, alpha, beta,
-                     newConsPass, p1Who, p1L, p1R, p1Tile, p2Who, p2L, p2R, passHash, ext);
+      // Pass: flip side, update consPass, keep placement history
+      var savedConsPass = gConsPass;
+      var savedHash = gHash;
+
+      gHash ^= SIDE_HASH;
+      if (gConsPass > 0) gHash ^= CONSPASS_HASH[1];
+      gConsPass = newConsPass;
+      if (gConsPass > 0) gHash ^= CONSPASS_HASH[1];
+
+      var score = minimaxBB(!isAI, depth, alpha, beta, ext);
+
+      gHash = savedHash;
+      gConsPass = savedConsPass;
+      return score;
     }
 
-    // Depth limit — check for tactical extension before falling back to static eval
+    // --- Depth limit with quiescence ---
     if (depth <= 0) {
-      // Quiescence: extend only in clearly tactical positions, with tight budget
       var extended = false;
       if (ext < 6) {
-        var myMoveCount = numMoves;
-        // Only extend when current side has exactly 1 forced move (no choice)
-        // or when total tiles is low enough that we're near endgame
-        var totalRemaining = aiTiles.length + humanTiles.length;
-        if (myMoveCount === 1) {
-          // Forced move — always extend (no branching cost)
-          extended = true;
+        var totalRemaining = popcount(gAiHand) + popcount(gHumanHand);
+        if (numMoves === 1) {
+          extended = true; // forced move, no branching cost
         } else if (totalRemaining <= 8) {
-          // Near endgame — extend to try to solve exactly
-          var oppMoveCount = countMoves(oppTiles, left, right);
-          if (oppMoveCount <= 1) extended = true;
+          var oppHand = isAI ? gHumanHand : gAiHand;
+          if (countMovesBB(oppHand, gLeft, gRight) <= 1) extended = true;
         }
       }
       if (extended) {
         depth = 1;
         ext = ext + 1;
       } else {
-        return evaluate(aiTiles, humanTiles, left, right);
+        return evaluateBB();
       }
     }
 
-    // TT probe
-    var ttHit = ttProbe(hash, depth, alpha, beta);
-    var ttBestMoveIdx = -1, ttBestMoveEnd = -1;
+    // --- TT probe ---
+    var ttHit = ttProbe(gHash, depth, alpha, beta);
+    var ttBestTile = -1, ttBestEnd = -1;
     if (ttHit) {
       if (ttHit.score !== null) return ttHit.score;
-      ttBestMoveIdx = ttHit.bestIdx;
-      ttBestMoveEnd = ttHit.bestEnd;
+      ttBestTile = ttHit.bestIdx;
+      ttBestEnd = ttHit.bestEnd;
     }
 
-    // Order moves for better pruning (only if enough moves to matter)
+    // --- Move ordering ---
     if (numMoves > 2) {
-      moves = orderMoves(moves, myTiles, oppTiles, left, right, isAI, depth);
-      numMoves = moves.length / 2;
+      orderMovesAtPly(gPly, numMoves, isAI, depth);
     }
 
-    // If TT has a best move (global tile index), move it to front
-    if (ttBestMoveIdx >= 0) {
+    // TT best move to front
+    if (ttBestTile >= 0) {
+      var base = gPly * 28;
       for (var mi = 1; mi < numMoves; mi++) {
-        var miGIdx = TILE_ID_TO_INDEX[myTiles[moves[mi * 2]].id];
-        if (miGIdx === ttBestMoveIdx && moves[mi * 2 + 1] === ttBestMoveEnd) {
-          // Swap with position 0
-          var tmpI = moves[0], tmpE = moves[1];
-          moves[0] = moves[mi * 2];
-          moves[1] = moves[mi * 2 + 1];
-          moves[mi * 2] = tmpI;
-          moves[mi * 2 + 1] = tmpE;
+        if (MOVE_TILE_BUF[base + mi] === ttBestTile &&
+            MOVE_END_BUF[base + mi] === ttBestEnd) {
+          var tmpT = MOVE_TILE_BUF[base];
+          var tmpE = MOVE_END_BUF[base];
+          MOVE_TILE_BUF[base] = MOVE_TILE_BUF[base + mi];
+          MOVE_END_BUF[base] = MOVE_END_BUF[base + mi];
+          MOVE_TILE_BUF[base + mi] = tmpT;
+          MOVE_END_BUF[base + mi] = tmpE;
           break;
         }
       }
     }
+
+    // --- Save state for unmake ---
+    var savedLeft = gLeft;
+    var savedRight = gRight;
+    var savedHash = gHash;
+    var savedConsPass = gConsPass;
+    var savedP1Who = gP1Who, savedP1L = gP1L, savedP1R = gP1R, savedP1Tile = gP1Tile;
+    var savedP2Who = gP2Who, savedP2L = gP2L, savedP2R = gP2R;
+    var savedPly = gPly;
 
     var who = isAI ? 1 : 0;
     var bestMoveIdx = -1, bestMoveEnd = -1;
     var origAlpha = alpha;
     var origBeta = beta;
+    var base = gPly * 28;
 
     if (isAI) {
-      // Maximizing
+      // === MAXIMIZING ===
       var best = -100000;
       for (var i = 0; i < numMoves; i++) {
-        var tIdx = moves[i * 2];
-        var end = moves[i * 2 + 1];
-        var tile = myTiles[tIdx];
-        var endStr = (end === 0 || end === -1) ? 'left' : 'right';
-        var newEnds = simPlace(left, right, tile, endStr);
-        var newAI = removeTile(aiTiles, tIdx);
+        var tIdx = MOVE_TILE_BUF[base + i];
+        var end = MOVE_END_BUF[base + i];
 
-        var tileGIdx = TILE_ID_TO_INDEX[tile.id];
+        // --- Make move ---
+        var bit = 1 << tIdx;
+        gAiHand ^= bit;
+
+        var newL, newR;
+        if (savedLeft === 7) {
+          newL = TILE_LOW[tIdx];
+          newR = TILE_HIGH[tIdx];
+        } else if (end === 0) {
+          newL = NEW_END_LEFT[tIdx * 8 + savedLeft];
+          newR = savedRight;
+        } else {
+          newL = savedLeft;
+          newR = NEW_END_RIGHT[tIdx * 8 + savedRight];
+        }
+        gLeft = newL;
+        gRight = newR;
+
+        // Hash update
+        gHash = savedHash;
+        gHash ^= TILE_HASH[tIdx][0]; // remove from AI hand
+        gHash ^= LEFT_HASH[savedLeft];
+        gHash ^= LEFT_HASH[newL];
+        gHash ^= RIGHT_HASH[savedRight];
+        gHash ^= RIGHT_HASH[newR];
+        gHash ^= SIDE_HASH;
+        if (savedConsPass > 0) gHash ^= CONSPASS_HASH[1];
+        gConsPass = 0;
+
+        // Puppeteer history shift
+        gP2Who = savedP1Who; gP2L = savedP1L; gP2R = savedP1R;
+        gP1Who = 1; gP1L = newL; gP1R = newR; gP1Tile = tIdx;
+
+        gPly = savedPly + 1;
+
+        var sc;
 
         // Terminal: AI domino
-        if (newAI.length === 0) {
-          var sc = scoreDomino(true, humanTiles, newEnds[0], newEnds[1]);
-          if (sc > best) { best = sc; bestMoveIdx = tileGIdx; bestMoveEnd = end; }
-          if (best > alpha) alpha = best;
-          if (beta <= alpha) break;
-          continue;
+        if (gAiHand === 0) {
+          sc = scoreDominoBB(true, gHumanHand, newL, newR);
+        }
+        // Terminal: immediate block
+        else if (countMovesBB(gHumanHand, newL, newR) === 0 &&
+                 countMovesBB(gAiHand, newL, newR) === 0) {
+          sc = scoreBlockBB();
+        }
+        // Recurse
+        else {
+          sc = minimaxBB(false, depth - 1, alpha, beta, ext);
         }
 
-        // Terminal: immediate lock — use Puppeteer-aware scoring
-        // New placement shifts history: old p1→p2, current move→p1
-        if (countMoves(humanTiles, newEnds[0], newEnds[1]) === 0 &&
-            countMoves(newAI, newEnds[0], newEnds[1]) === 0) {
-          var sc = scoreBlockPuppeteer(newAI, humanTiles, newEnds[0], newEnds[1],
-                                       who, newEnds[0], newEnds[1], tile,
-                                       p1Who, p1L, p1R);
-          if (sc > best) { best = sc; bestMoveIdx = tileGIdx; bestMoveEnd = end; }
-          if (best > alpha) alpha = best;
-          if (beta <= alpha) break;
-          continue;
-        }
+        // --- Unmake ---
+        gAiHand ^= bit;
+        gLeft = savedLeft; gRight = savedRight;
+        gHash = savedHash; gConsPass = savedConsPass;
+        gP1Who = savedP1Who; gP1L = savedP1L; gP1R = savedP1R; gP1Tile = savedP1Tile;
+        gP2Who = savedP2Who; gP2L = savedP2L; gP2R = savedP2R;
+        gPly = savedPly;
 
-        // Incremental hash update for child position:
-        // XOR out: tile from AI hand, old left/right ends, side, consPass
-        // XOR in:  new left/right ends, flipped side, consPass=0
-        var childHash = hash;
-        childHash ^= TILE_HASH[tileGIdx][0]; // remove tile from AI hand
-        childHash ^= LEFT_HASH[left === null ? 7 : left]; // old left
-        childHash ^= LEFT_HASH[newEnds[0]]; // new left
-        childHash ^= RIGHT_HASH[right === null ? 7 : right]; // old right
-        childHash ^= RIGHT_HASH[newEnds[1]]; // new right
-        childHash ^= SIDE_HASH; // flip side (was AI, now human)
-        if (consPass > 0) childHash ^= CONSPASS_HASH[Math.min(consPass, 1)]; // remove old consPass
-
-        // Recurse — shift placement history: old p1→p2, current→p1
-        var sc = minimax(newAI, humanTiles, newEnds[0], newEnds[1], false, depth - 1, alpha, beta,
-                         0, who, newEnds[0], newEnds[1], tile, p1Who, p1L, p1R, childHash, ext);
-        if (sc > best) { best = sc; bestMoveIdx = tileGIdx; bestMoveEnd = end; }
+        if (sc > best) { best = sc; bestMoveIdx = tIdx; bestMoveEnd = end; }
         if (best > alpha) alpha = best;
         if (beta <= alpha) {
-          // Beta cutoff — record killer move (global tile index) and update history
-          var gi = TILE_ID_TO_INDEX[tile.id];
+          // Beta cutoff: killer + history
           if (depth >= 0 && depth < MAX_DEPTH_SLOTS) {
-            killerTileId[depth] = gi;
+            killerTileId[depth] = tIdx;
             killerEnd[depth] = end;
           }
-          historyScore[gi][end + 1] += depth * depth;
+          historyScore[tIdx][end + 1] += depth * depth;
           break;
         }
       }
 
     } else {
-      // Minimizing (human turn)
+      // === MINIMIZING ===
       var best = 100000;
       for (var i = 0; i < numMoves; i++) {
-        var tIdx = moves[i * 2];
-        var end = moves[i * 2 + 1];
-        var tile = myTiles[tIdx];
-        var endStr = (end === 0 || end === -1) ? 'left' : 'right';
-        var newEnds = simPlace(left, right, tile, endStr);
-        var newHuman = removeTile(humanTiles, tIdx);
-        var tileGIdx = TILE_ID_TO_INDEX[tile.id];
+        var tIdx = MOVE_TILE_BUF[base + i];
+        var end = MOVE_END_BUF[base + i];
+
+        // --- Make move ---
+        var bit = 1 << tIdx;
+        gHumanHand ^= bit;
+
+        var newL, newR;
+        if (savedLeft === 7) {
+          newL = TILE_LOW[tIdx];
+          newR = TILE_HIGH[tIdx];
+        } else if (end === 0) {
+          newL = NEW_END_LEFT[tIdx * 8 + savedLeft];
+          newR = savedRight;
+        } else {
+          newL = savedLeft;
+          newR = NEW_END_RIGHT[tIdx * 8 + savedRight];
+        }
+        gLeft = newL;
+        gRight = newR;
+
+        // Hash update
+        gHash = savedHash;
+        gHash ^= TILE_HASH[tIdx][1]; // remove from human hand
+        gHash ^= LEFT_HASH[savedLeft];
+        gHash ^= LEFT_HASH[newL];
+        gHash ^= RIGHT_HASH[savedRight];
+        gHash ^= RIGHT_HASH[newR];
+        gHash ^= SIDE_HASH;
+        if (savedConsPass > 0) gHash ^= CONSPASS_HASH[1];
+        gConsPass = 0;
+
+        // Puppeteer history shift
+        gP2Who = savedP1Who; gP2L = savedP1L; gP2R = savedP1R;
+        gP1Who = 0; gP1L = newL; gP1R = newR; gP1Tile = tIdx;
+
+        gPly = savedPly + 1;
+
+        var sc;
 
         // Terminal: human domino
-        if (newHuman.length === 0) {
-          var sc = scoreDomino(false, aiTiles, newEnds[0], newEnds[1]);
-          if (sc < best) { best = sc; bestMoveIdx = tileGIdx; bestMoveEnd = end; }
-          if (best < beta) beta = best;
-          if (beta <= alpha) break;
-          continue;
+        if (gHumanHand === 0) {
+          sc = scoreDominoBB(false, gAiHand, newL, newR);
+        }
+        // Terminal: immediate block
+        else if (countMovesBB(gAiHand, newL, newR) === 0 &&
+                 countMovesBB(gHumanHand, newL, newR) === 0) {
+          sc = scoreBlockBB();
+        }
+        // Recurse
+        else {
+          sc = minimaxBB(true, depth - 1, alpha, beta, ext);
         }
 
-        // Terminal: immediate lock — use Puppeteer-aware scoring
-        if (countMoves(aiTiles, newEnds[0], newEnds[1]) === 0 &&
-            countMoves(newHuman, newEnds[0], newEnds[1]) === 0) {
-          var sc = scoreBlockPuppeteer(aiTiles, newHuman, newEnds[0], newEnds[1],
-                                       who, newEnds[0], newEnds[1], tile,
-                                       p1Who, p1L, p1R);
-          if (sc < best) { best = sc; bestMoveIdx = tileGIdx; bestMoveEnd = end; }
-          if (best < beta) beta = best;
-          if (beta <= alpha) break;
-          continue;
-        }
+        // --- Unmake ---
+        gHumanHand ^= bit;
+        gLeft = savedLeft; gRight = savedRight;
+        gHash = savedHash; gConsPass = savedConsPass;
+        gP1Who = savedP1Who; gP1L = savedP1L; gP1R = savedP1R; gP1Tile = savedP1Tile;
+        gP2Who = savedP2Who; gP2L = savedP2L; gP2R = savedP2R;
+        gPly = savedPly;
 
-        // Incremental hash update for child position:
-        var childHash = hash;
-        childHash ^= TILE_HASH[tileGIdx][1]; // remove tile from human hand
-        childHash ^= LEFT_HASH[left === null ? 7 : left];
-        childHash ^= LEFT_HASH[newEnds[0]];
-        childHash ^= RIGHT_HASH[right === null ? 7 : right];
-        childHash ^= RIGHT_HASH[newEnds[1]];
-        childHash ^= SIDE_HASH; // flip side (was human, now AI)
-        if (consPass > 0) childHash ^= CONSPASS_HASH[Math.min(consPass, 1)];
-
-        // Recurse — shift placement history
-        var sc = minimax(aiTiles, newHuman, newEnds[0], newEnds[1], true, depth - 1, alpha, beta,
-                         0, who, newEnds[0], newEnds[1], tile, p1Who, p1L, p1R, childHash, ext);
-        if (sc < best) { best = sc; bestMoveIdx = tileGIdx; bestMoveEnd = end; }
+        if (sc < best) { best = sc; bestMoveIdx = tIdx; bestMoveEnd = end; }
         if (best < beta) beta = best;
         if (beta <= alpha) {
-          // Alpha cutoff (from minimizer's perspective) — record killer (global tile index) and history
           if (depth >= 0 && depth < MAX_DEPTH_SLOTS) {
-            killerTileId[depth] = tileGIdx;
+            killerTileId[depth] = tIdx;
             killerEnd[depth] = end;
           }
-          historyScore[tileGIdx][end + 1] += depth * depth;
+          historyScore[tIdx][end + 1] += depth * depth;
           break;
         }
       }
     }
 
-    // TT store with proper flag determination
-    // Standard pattern: compare best against original alpha and beta
+    // --- TT store ---
     var ttF;
     if (best <= origAlpha) {
-      ttF = TT_UPPER; // All moves scored <= alpha → upper bound
+      ttF = TT_UPPER;
     } else if (best >= origBeta) {
-      ttF = TT_LOWER; // Beta cutoff → lower bound
+      ttF = TT_LOWER;
     } else {
-      ttF = TT_EXACT; // Score is within window
+      ttF = TT_EXACT;
     }
-    ttStore(hash, depth, ttF, best, bestMoveIdx, bestMoveEnd);
+    ttStore(gHash, depth, ttF, best, bestMoveIdx, bestMoveEnd);
 
     return best;
   }
 
-  // --- AIPlayer class ---
+  // =====================================================================
+  // Compute initial Zobrist hash for the root position
+  // =====================================================================
+
+  function computeRootHash(aiHand, humanHand, left, right, isAI, consPass) {
+    var h = 0;
+    var a = aiHand;
+    while (a) {
+      var bit = a & (-a);
+      var idx = 31 - Math.clz32(bit);
+      h ^= TILE_HASH[idx][0];
+      a ^= bit;
+    }
+    var hu = humanHand;
+    while (hu) {
+      var bit = hu & (-hu);
+      var idx = 31 - Math.clz32(bit);
+      h ^= TILE_HASH[idx][1];
+      hu ^= bit;
+    }
+    h ^= LEFT_HASH[left];
+    h ^= RIGHT_HASH[right];
+    if (!isAI) h ^= SIDE_HASH;
+    if (consPass > 0) h ^= CONSPASS_HASH[1];
+    return h;
+  }
+
+  // =====================================================================
+  // AIPlayer CLASS (preserves interface for ui.js)
+  // =====================================================================
 
   class AIPlayer {
     constructor(difficulty) {
@@ -762,200 +936,230 @@
 
     chooseMoveHard(legalMoves, engine) {
       var hand = engine.hand;
-      var aiTiles = hand.aiHand.tiles.slice();
-      var humanTiles = hand.humanHand.tiles.slice();
       var board = hand.board;
-      var left = board.isEmpty() ? null : board.leftEnd;
-      var right = board.isEmpty() ? null : board.rightEnd;
 
-      var totalTiles = aiTiles.length + humanTiles.length;
-      var depthCeiling = getMaxDepth(totalTiles);
+      // --- Convert to bitmasks ---
+      gAiHand = 0;
+      for (var i = 0; i < hand.aiHand.tiles.length; i++) {
+        gAiHand |= (1 << TILE_ID_TO_INDEX[hand.aiHand.tiles[i].id]);
+      }
+      gHumanHand = 0;
+      for (var i = 0; i < hand.humanHand.tiles.length; i++) {
+        gHumanHand |= (1 << TILE_ID_TO_INDEX[hand.humanHand.tiles[i].id]);
+      }
 
-      ttClear();
-      clearMoveOrderingData();
+      gLeft = board.isEmpty() ? 7 : board.leftEnd;
+      gRight = board.isEmpty() ? 7 : board.rightEnd;
+      gPly = 0;
+      gConsPass = 0;
 
-      // Seed placement history from engine's moveHistory (last 2 non-pass entries)
-      var p1Who = -1, p1L = 0, p1R = 0, p1Tile = null;
-      var p2Who = -1, p2L = 0, p2R = 0;
+      // Seed Puppeteer history from engine's moveHistory
+      gP1Who = -1; gP1L = 0; gP1R = 0; gP1Tile = -1;
+      gP2Who = -1; gP2L = 0; gP2R = 0;
       var history = hand.moveHistory;
       var placementCount = 0;
       for (var hi = history.length - 1; hi >= 0 && placementCount < 2; hi--) {
         if (!history[hi].pass) {
           if (placementCount === 0) {
-            p1Who = (history[hi].player === 'ai') ? 1 : 0;
-            p1L = history[hi].boardEnds.left;
-            p1R = history[hi].boardEnds.right;
-            p1Tile = history[hi].tile;
+            gP1Who = (history[hi].player === 'ai') ? 1 : 0;
+            gP1L = history[hi].boardEnds.left;
+            gP1R = history[hi].boardEnds.right;
+            gP1Tile = TILE_ID_TO_INDEX[history[hi].tile.id];
           } else {
-            p2Who = (history[hi].player === 'ai') ? 1 : 0;
-            p2L = history[hi].boardEnds.left;
-            p2R = history[hi].boardEnds.right;
+            gP2Who = (history[hi].player === 'ai') ? 1 : 0;
+            gP2L = history[hi].boardEnds.left;
+            gP2R = history[hi].boardEnds.right;
           }
           placementCount++;
         }
       }
 
-      // Compute initial Zobrist hash for root position (AI to move)
-      var rootHash = computeHash(aiTiles, humanTiles, left, right, true, 0);
+      // Setup search
+      var totalTiles = popcount(gAiHand) + popcount(gHumanHand);
+      gHash = computeRootHash(gAiHand, gHumanHand, gLeft, gRight, true, 0);
 
-      // Build root moves (reused across iterations)
-      var rootMoves = getMoves(aiTiles, left, right);
-      var numMoves = rootMoves.length / 2;
+      ttClear();
+      clearMoveOrderingData();
 
       var bestMove = legalMoves[0];
-      var TIME_BUDGET = 2000; // milliseconds
-      var startTime = Date.now();
-      var prevScore = 0; // for aspiration windows
+      var prevScore = 0;
+      timeStart = Date.now();
 
-      // Iterative deepening loop: depth 1, 2, 3, ... up to ceiling
-      for (var iterDepth = 1; iterDepth <= depthCeiling; iterDepth++) {
+      // Iterative deepening
+      for (var iterDepth = 1; iterDepth <= 50; iterDepth++) {
         nodeCount = 0;
 
-        // Re-order root moves using TT PV from previous iteration + killers/history
-        var orderedMoves = rootMoves;
+        // Generate root moves
+        var numMoves = generateMoves(gAiHand, gLeft, gRight, 0);
+
+        // Order root moves
         if (numMoves > 2) {
-          orderedMoves = orderMoves(rootMoves, aiTiles, humanTiles, left, right, true, iterDepth);
+          orderMovesAtPly(0, numMoves, true, iterDepth);
         }
 
-        // Check TT for PV move from previous iteration — move it to front (uses global tile index)
-        var pvHit = ttProbe(rootHash, 0, -100000, 100000);
+        // TT PV move to front
+        var pvHit = ttProbe(gHash, 0, -100000, 100000);
         if (pvHit && pvHit.bestIdx >= 0) {
           for (var mi = 1; mi < numMoves; mi++) {
-            var pvGIdx = TILE_ID_TO_INDEX[aiTiles[orderedMoves[mi * 2]].id];
-            if (pvGIdx === pvHit.bestIdx && orderedMoves[mi * 2 + 1] === pvHit.bestEnd) {
-              var tmpI = orderedMoves[0], tmpE = orderedMoves[1];
-              orderedMoves[0] = orderedMoves[mi * 2];
-              orderedMoves[1] = orderedMoves[mi * 2 + 1];
-              orderedMoves[mi * 2] = tmpI;
-              orderedMoves[mi * 2 + 1] = tmpE;
+            if (MOVE_TILE_BUF[mi] === pvHit.bestIdx &&
+                MOVE_END_BUF[mi] === pvHit.bestEnd) {
+              var tmpT = MOVE_TILE_BUF[0], tmpE = MOVE_END_BUF[0];
+              MOVE_TILE_BUF[0] = MOVE_TILE_BUF[mi];
+              MOVE_END_BUF[0] = MOVE_END_BUF[mi];
+              MOVE_TILE_BUF[mi] = tmpT;
+              MOVE_END_BUF[mi] = tmpE;
               break;
             }
           }
         }
 
-        // Aspiration window: use narrow window around previous score (skip for depth 1)
+        // Aspiration window
         var ASP_WINDOW = 30;
-        var alpha, beta;
+        var alphaW, betaW;
         if (iterDepth <= 1) {
-          alpha = -100000;
-          beta = 100000;
+          alphaW = -100000;
+          betaW = 100000;
         } else {
-          alpha = prevScore - ASP_WINDOW;
-          beta = prevScore + ASP_WINDOW;
+          alphaW = prevScore - ASP_WINDOW;
+          betaW = prevScore + ASP_WINDOW;
         }
 
         var iterBestScore = -100000;
-        var iterBestMove = null;
+        var iterBestTileIdx = -1;
+        var iterBestEnd = -1;
         var iterComplete = true;
-        var aspFailed = false;
 
-        // Aspiration search with re-search on fail
         for (var aspRetry = 0; aspRetry < 3; aspRetry++) {
           iterBestScore = -100000;
-          iterBestMove = null;
+          iterBestTileIdx = -1;
+          iterBestEnd = -1;
           iterComplete = true;
-          var curAlpha = alpha;
+          var curAlpha = alphaW;
+
+          // Save root state
+          var rootAiHand = gAiHand;
+          var rootHash = gHash;
 
           for (var i = 0; i < numMoves; i++) {
-            var tIdx = orderedMoves[i * 2];
-            var end = orderedMoves[i * 2 + 1];
-            var tile = aiTiles[tIdx];
-            var endStr = (end === 0 || end === -1) ? 'left' : 'right';
-            var newEnds = simPlace(left, right, tile, endStr);
-            var newAI = removeTile(aiTiles, tIdx);
+            var tIdx = MOVE_TILE_BUF[i];
+            var end = MOVE_END_BUF[i];
+
+            // Make move at root
+            var bit = 1 << tIdx;
+            gAiHand = rootAiHand ^ bit;
+
+            var newL, newR;
+            if (gLeft === 7) {
+              newL = TILE_LOW[tIdx];
+              newR = TILE_HIGH[tIdx];
+            } else if (end === 0) {
+              newL = NEW_END_LEFT[tIdx * 8 + gLeft];
+              newR = gRight;
+            } else {
+              newL = gLeft;
+              newR = NEW_END_RIGHT[tIdx * 8 + gRight];
+            }
+
+            var savedRootLeft = gLeft, savedRootRight = gRight;
+            gLeft = newL; gRight = newR;
+
+            // Root hash
+            gHash = rootHash;
+            gHash ^= TILE_HASH[tIdx][0];
+            gHash ^= LEFT_HASH[savedRootLeft];
+            gHash ^= LEFT_HASH[newL];
+            gHash ^= RIGHT_HASH[savedRootRight];
+            gHash ^= RIGHT_HASH[newR];
+            gHash ^= SIDE_HASH;
+
+            gConsPass = 0;
+
+            // Puppeteer history for root move
+            var savedRP1Who = gP1Who, savedRP1L = gP1L, savedRP1R = gP1R, savedRP1Tile = gP1Tile;
+            var savedRP2Who = gP2Who, savedRP2L = gP2L, savedRP2R = gP2R;
+            gP2Who = gP1Who; gP2L = gP1L; gP2R = gP1R;
+            gP1Who = 1; gP1L = newL; gP1R = newR; gP1Tile = tIdx;
+
+            gPly = 1;
 
             var score;
 
             // Terminal: AI domino
-            if (newAI.length === 0) {
-              score = scoreDomino(true, humanTiles, newEnds[0], newEnds[1]);
+            if (gAiHand === 0) {
+              score = scoreDominoBB(true, gHumanHand, newL, newR);
             }
-            // Terminal: immediate lock — Puppeteer-aware
-            else if (countMoves(humanTiles, newEnds[0], newEnds[1]) === 0 &&
-                     countMoves(newAI, newEnds[0], newEnds[1]) === 0) {
-              score = scoreBlockPuppeteer(newAI, humanTiles, newEnds[0], newEnds[1],
-                                          1, newEnds[0], newEnds[1], tile,
-                                          p1Who, p1L, p1R);
+            // Terminal: immediate block
+            else if (countMovesBB(gHumanHand, newL, newR) === 0 &&
+                     countMovesBB(gAiHand, newL, newR) === 0) {
+              score = scoreBlockBB();
             }
             // Recurse
             else {
-              var tileIdx = TILE_ID_TO_INDEX[tile.id];
-              var childHash = rootHash;
-              childHash ^= TILE_HASH[tileIdx][0];
-              childHash ^= LEFT_HASH[left === null ? 7 : left];
-              childHash ^= LEFT_HASH[newEnds[0]];
-              childHash ^= RIGHT_HASH[right === null ? 7 : right];
-              childHash ^= RIGHT_HASH[newEnds[1]];
-              childHash ^= SIDE_HASH;
-
-              score = minimax(newAI, humanTiles, newEnds[0], newEnds[1], false, iterDepth - 1, curAlpha, beta,
-                              0, 1, newEnds[0], newEnds[1], tile, p1Who, p1L, p1R, childHash, 0);
+              score = minimaxBB(false, iterDepth - 1, curAlpha, betaW, 0);
             }
+
+            // Unmake root
+            gAiHand = rootAiHand;
+            gLeft = savedRootLeft; gRight = savedRootRight;
+            gHash = rootHash;
+            gP1Who = savedRP1Who; gP1L = savedRP1L; gP1R = savedRP1R; gP1Tile = savedRP1Tile;
+            gP2Who = savedRP2Who; gP2L = savedRP2L; gP2R = savedRP2R;
+            gPly = 0;
+            gConsPass = 0;
 
             if (score > iterBestScore) {
               iterBestScore = score;
-              iterBestMove = this.findLegalMove(legalMoves, tile, endStr);
+              iterBestTileIdx = tIdx;
+              iterBestEnd = end;
             }
             if (score > curAlpha) curAlpha = score;
 
-            // Check if NODE_LIMIT hit during this iteration
             if (nodeCount >= NODE_LIMIT) {
               iterComplete = false;
               break;
             }
           }
 
-          // Check aspiration window failures
-          if (iterComplete && iterBestScore <= alpha) {
-            // Fail low — widen window downward and re-search
-            alpha = -100000;
-            aspFailed = true;
+          // Aspiration re-search
+          if (iterComplete && iterBestScore <= alphaW) {
+            alphaW = -100000;
             continue;
           }
-          if (iterComplete && iterBestScore >= beta) {
-            // Fail high — widen window upward and re-search
-            beta = 100000;
-            aspFailed = true;
+          if (iterComplete && iterBestScore >= betaW) {
+            betaW = 100000;
             continue;
           }
-          break; // Search within window succeeded
+          break;
         }
 
-        // Update best move: use completed iterations always, partial iterations
-        // only if the partial best matches the previous best (PV confirmation)
-        // or if it found a clearly winning move (terminal score)
-        if (iterComplete && iterBestMove) {
-          bestMove = iterBestMove;
-          prevScore = iterBestScore;
-        } else if (iterBestMove) {
-          // Partial iteration: use result if it confirms PV or finds a forced win
-          if (iterBestMove === bestMove || iterBestScore > 500) {
-            bestMove = iterBestMove;
-          }
-        }
+        // Map internal tile index + end back to legalMoves entry
+        if (iterBestTileIdx >= 0) {
+          var endStr = (iterBestEnd === 0) ? 'left' : 'right';
+          var tileId = TILE_LOW[iterBestTileIdx] + '-' + TILE_HIGH[iterBestTileIdx];
+          var mapped = this.findLegalMove(legalMoves, tileId, endStr);
 
-        // Store root position in TT for PV reuse in next iteration (global tile index)
-        if (iterComplete) {
-          for (var si = 0; si < numMoves; si++) {
-            var sTile = aiTiles[orderedMoves[si * 2]];
-            var sEnd = orderedMoves[si * 2 + 1];
-            var sEndStr = (sEnd === 0 || sEnd === -1) ? 'left' : 'right';
-            var sLM = this.findLegalMove(legalMoves, sTile, sEndStr);
-            if (sLM === bestMove) {
-              var sGIdx = TILE_ID_TO_INDEX[sTile.id];
-              ttStore(rootHash, iterDepth, TT_EXACT, iterBestScore, sGIdx, sEnd);
-              break;
+          if (iterComplete && mapped) {
+            bestMove = mapped;
+            prevScore = iterBestScore;
+          } else if (mapped) {
+            if (mapped === bestMove || iterBestScore > 500) {
+              bestMove = mapped;
             }
           }
         }
 
-        // Early termination: exact solve (searched everything within node limit)
+        // TT store for PV reuse
+        if (iterComplete && iterBestTileIdx >= 0) {
+          ttStore(gHash, iterDepth, TT_EXACT, iterBestScore, iterBestTileIdx, iterBestEnd);
+        }
+
+        // Early termination: full solve
         if (iterComplete && nodeCount < NODE_LIMIT && iterDepth >= totalTiles) {
           break;
         }
 
-        // Time check: if we've used > 50% of budget, don't start next iteration
-        var elapsed = Date.now() - startTime;
+        // Time check
+        var elapsed = Date.now() - timeStart;
         if (elapsed > TIME_BUDGET * 0.5) {
           break;
         }
@@ -964,16 +1168,16 @@
       return bestMove;
     }
 
-    // Map internal tile+end to the engine's legalMoves array entry
-    findLegalMove(legalMoves, tile, endStr) {
+    // Map tile index + end string to legalMoves entry
+    findLegalMove(legalMoves, tileId, endStr) {
       for (var i = 0; i < legalMoves.length; i++) {
-        if (legalMoves[i].tile === tile && legalMoves[i].end === endStr) {
+        if (legalMoves[i].tile.id === tileId && legalMoves[i].end === endStr) {
           return legalMoves[i];
         }
       }
       // Fallback: same tile, any end
       for (var i = 0; i < legalMoves.length; i++) {
-        if (legalMoves[i].tile === tile) return legalMoves[i];
+        if (legalMoves[i].tile.id === tileId) return legalMoves[i];
       }
       return legalMoves[0];
     }

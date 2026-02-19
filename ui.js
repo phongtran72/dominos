@@ -25,6 +25,8 @@
   var selectedTile = null;
   var selectedMoves = []; // legal moves for selected tile
   var difficulty = 'easy';
+  var selectedEngine = 'new'; // 'old' or 'new'
+  var openTiles = true;       // show AI tiles face-up
   var isProcessing = false;
 
   function init() {
@@ -76,6 +78,26 @@
       });
     }
 
+    // Engine buttons
+    var engineBtns = document.querySelectorAll('[data-engine]');
+    for (var i = 0; i < engineBtns.length; i++) {
+      engineBtns[i].addEventListener('click', function () {
+        for (var j = 0; j < engineBtns.length; j++) engineBtns[j].classList.remove('active');
+        this.classList.add('active');
+        selectedEngine = this.getAttribute('data-engine');
+      });
+    }
+
+    // Open tiles buttons
+    var tileBtns = document.querySelectorAll('[data-opentiles]');
+    for (var i = 0; i < tileBtns.length; i++) {
+      tileBtns[i].addEventListener('click', function () {
+        for (var j = 0; j < tileBtns.length; j++) tileBtns[j].classList.remove('active');
+        this.classList.add('active');
+        openTiles = this.getAttribute('data-opentiles') === 'open';
+      });
+    }
+
     // Start button
     document.getElementById('start-btn').addEventListener('click', onStartMatch);
 
@@ -103,7 +125,11 @@
   function onStartMatch() {
     engine = new D.GameEngine();
     engine.newMatch(difficulty);
-    ai = new D.AIPlayer(difficulty);
+    if (selectedEngine === 'old') {
+      ai = new D.OldAIPlayer(difficulty);
+    } else {
+      ai = new D.AIPlayer(difficulty);
+    }
 
     els.startOverlay.style.display = 'none';
     showLeaderChoice();
@@ -257,6 +283,17 @@
   }
 
   function applyAIMove(move, elapsed) {
+    if (openTiles) {
+      // Animate the tile flying from AI hand to board
+      animateAITile(move, function () {
+        finishAIMove(move, elapsed);
+      });
+    } else {
+      finishAIMove(move, elapsed);
+    }
+  }
+
+  function finishAIMove(move, elapsed) {
     var result = engine.playTile('ai', move.tile, move.end);
 
     setStatus('AI plays ' + move.tile.toString() + '.');
@@ -280,6 +317,79 @@
     }, postDelay);
   }
 
+  // Animate an AI tile flying from the AI hand area to the board
+  function animateAITile(move, callback) {
+    var tileId = move.tile.id;
+    var sourceEl = els.aiHand.querySelector('[data-tile-id="' + tileId + '"]');
+
+    if (!sourceEl) {
+      // Fallback: no source element found (hidden mode), skip animation
+      callback();
+      return;
+    }
+
+    // Get source position
+    var sourceRect = sourceEl.getBoundingClientRect();
+
+    // Find target: the left or right end of the board
+    var boardRect = els.boardArea.getBoundingClientRect();
+    var targetRect;
+
+    // Create flying clone
+    var clone = sourceEl.cloneNode(true);
+    clone.className = sourceEl.className;
+    clone.classList.remove('tile--ai-open');
+    clone.classList.add('tile--flying');
+    clone.style.left = sourceRect.left + 'px';
+    clone.style.top = sourceRect.top + 'px';
+    clone.style.width = sourceRect.width + 'px';
+    clone.style.height = sourceRect.height + 'px';
+    document.body.appendChild(clone);
+
+    // Ghost the original tile
+    sourceEl.classList.add('tile--ghost');
+
+    // Compute target: fly to the correct end of the board
+    var boardTiles = els.board.children;
+    if (boardTiles.length > 0 && move.end === 'left') {
+      targetRect = boardTiles[0].getBoundingClientRect();
+    } else if (boardTiles.length > 0 && move.end === 'right') {
+      targetRect = boardTiles[boardTiles.length - 1].getBoundingClientRect();
+    } else {
+      targetRect = boardRect;
+    }
+    var targetX = targetRect.left + targetRect.width / 2 - sourceRect.width / 2;
+    var targetY = targetRect.top + targetRect.height / 2 - sourceRect.height / 2;
+
+    // Trigger animation in next frame
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        clone.style.left = targetX + 'px';
+        clone.style.top = targetY + 'px';
+        clone.style.transform = 'scale(1.1)';
+      });
+    });
+
+    // Guard against double-fire (transitionend + safety timeout)
+    var animDone = false;
+    function onAnimComplete() {
+      if (animDone) return;
+      animDone = true;
+      if (clone.parentNode) clone.parentNode.removeChild(clone);
+      callback();
+    }
+
+    // Clean up after animation
+    clone.addEventListener('transitionend', function onEnd(e) {
+      if (e.target !== clone) return; // ignore child transitions
+      clone.removeEventListener('transitionend', onEnd);
+      onAnimComplete();
+    });
+
+    // Safety fallback in case transitionend doesn't fire
+    setTimeout(onAnimComplete, 700);
+  }
+
   function executeAITurn() {
     var legalMoves = engine.getLegalMoves('ai');
 
@@ -300,8 +410,8 @@
       return;
     }
 
-    // Hard mode with Web Worker available → async off-main-thread
-    if (difficulty === 'hard' && aiWorker) {
+    // Hard mode with Web Worker available → async off-main-thread (bitboard engine only)
+    if (difficulty === 'hard' && aiWorker && selectedEngine === 'new') {
       var t0 = Date.now();
 
       // Serialize state for the worker
@@ -477,6 +587,7 @@
     return el;
   }
 
+  // ---- Board tile creation ----
   function createBoardTileElement(placement) {
     var tile = placement.tile;
     var isVertical = tile.isDouble();
@@ -522,6 +633,9 @@
     return el;
   }
 
+  // ============================================================
+  // Render Board — simple horizontal row
+  // ============================================================
   function renderBoard() {
     els.board.innerHTML = '';
     var boardTiles = engine.hand.board.tiles;
@@ -580,11 +694,25 @@
 
   function renderAIHand() {
     els.aiHand.innerHTML = '';
-    var count = engine.hand.aiHand.count();
-    for (var i = 0; i < count; i++) {
-      els.aiHand.appendChild(createBackTile());
+    if (openTiles) {
+      // Show AI tiles face-up
+      var tiles = engine.hand.aiHand.tiles;
+      for (var i = 0; i < tiles.length; i++) {
+        var el = createTileElement(tiles[i], false);
+        el.classList.add('tile--board');
+        el.classList.add('tile--ai-open');
+        el.setAttribute('data-tile-id', tiles[i].id);
+        els.aiHand.appendChild(el);
+      }
+      els.aiTileCount.textContent = '(' + tiles.length + ')';
+    } else {
+      // Face-down back tiles
+      var count = engine.hand.aiHand.count();
+      for (var i = 0; i < count; i++) {
+        els.aiHand.appendChild(createBackTile());
+      }
+      els.aiTileCount.textContent = '(' + count + ')';
     }
-    els.aiTileCount.textContent = '(' + count + ')';
   }
 
   function renderAIHandRevealed() {

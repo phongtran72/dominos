@@ -164,7 +164,7 @@ body {
   text-align: center;
 }
 
-/* --- Board Area --- */
+/* --- Board Area (scrollable row) --- */
 #board-area {
   flex: 1;
   display: flex;
@@ -188,6 +188,20 @@ body {
   min-width: min-content;
 }
 
+/* Board tiles — no interaction effects */
+.tile--board {
+  cursor: default;
+}
+.tile--board:hover {
+  transform: none;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+}
+
+/* New tile placement animation */
+.tile--placed {
+  animation: tile-drop 0.3s ease-out;
+}
+
 /* --- End Markers --- */
 .end-marker {
   z-index: 20;
@@ -205,9 +219,8 @@ body {
 }
 
 .end-marker:hover {
-  background: rgba(100, 255, 100, 0.2);
+  background: rgba(100, 255, 100, 0.25);
   border-color: rgba(100, 255, 100, 0.8);
-  transform: scale(1.05);
 }
 
 .end-marker.glow {
@@ -217,8 +230,9 @@ body {
 }
 
 .end-arrow {
-  font-size: 1.5rem;
-  color: rgba(100, 255, 100, 0.7);
+  font-size: 1.3rem;
+  color: rgba(100, 255, 100, 0.8);
+  line-height: 1;
 }
 
 /* --- Domino Tile --- */
@@ -356,23 +370,28 @@ body {
   transform: translateY(-8px) scale(1.04);
 }
 
-/* Board tile (no interaction effects) */
-.tile--board {
-  cursor: default;
-}
-.tile--board:hover {
-  transform: none;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.3);
-}
-
-/* Tile placement animation */
-.tile--placed {
-  animation: tile-drop 0.3s ease-out;
-}
-
 @keyframes tile-drop {
   from { opacity: 0; transform: scale(0.5); }
   to   { opacity: 1; transform: scale(1); }
+}
+
+/* Flying tile animation (AI move with open tiles) */
+.tile--flying {
+  position: fixed;
+  z-index: 1000;
+  transition: left 0.5s ease-in-out, top 0.5s ease-in-out, transform 0.5s ease-in-out;
+  pointer-events: none;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+}
+
+.tile--ghost {
+  opacity: 0.25;
+}
+
+/* Open AI tiles (non-interactive, slightly dimmer than player tiles) */
+.tile--ai-open {
+  opacity: 0.85;
+  cursor: default;
 }
 
 /* --- Buttons --- */

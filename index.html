@@ -77,6 +77,20 @@
           <button class="btn btn-option" data-difficulty="hard">Hard</button>
         </div>
       </div>
+      <div class="form-group">
+        <label>Engine</label>
+        <div class="radio-group">
+          <button class="btn btn-option" data-engine="old">Old Minimax</button>
+          <button class="btn btn-option active" data-engine="new">Bitboard</button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>AI Tiles</label>
+        <div class="radio-group">
+          <button class="btn btn-option" data-opentiles="hidden">Hidden</button>
+          <button class="btn btn-option active" data-opentiles="open">Open</button>
+        </div>
+      </div>
       <button id="start-btn" class="btn btn-primary">Start Match</button>
     </div>
   </div>
@@ -112,6 +126,7 @@
   </div>
 
   <script src="game.js"></script>
+  <script src="ai-old.js"></script>
   <script src="ai.js"></script>
   <script src="ui.js"></script>
   <script>

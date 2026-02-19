@@ -1,64 +1,98 @@
 // ============================================================
 // ai-worker.js — Self-contained Web Worker for Dominos AI
+//   (Bitboard Engine)
 //
 // This file is a complete, standalone AI engine that runs inside
 // a Web Worker. It has NO imports, NO DOM access, NO `window`.
 // All AI logic from ai.js is replicated here, adapted for the
 // worker context.
+//
+// Uses 28-bit integer bitmasks for hands, make/unmake with XOR,
+// pre-computed lookup tables, and zero allocation in the hot path.
 // ============================================================
 
 'use strict';
 
-// --- Minimal Tile class ---
+// =====================================================================
+// TILE INDEXING: double-six set, 28 tiles
+// =====================================================================
 
-function Tile(low, high) {
-  this.low = Math.min(low, high);
-  this.high = Math.max(low, high);
-  this.id = this.low + '-' + this.high;
-}
+var TILE_LOW = new Int8Array(28);
+var TILE_HIGH = new Int8Array(28);
+var TILE_PIPS = new Int8Array(28);
+var TILE_IS_DOUBLE = new Uint8Array(28);
 
-Tile.prototype.matches = function (value) {
-  return this.low === value || this.high === value;
-};
+var TILE_ID_TO_INDEX = {};
+var SUIT_MASK = new Int32Array(7);
+var DOUBLE_MASK = 0;
+var TILE_00_BIT = 0;
 
-Tile.prototype.isDouble = function () {
-  return this.low === this.high;
-};
-
-Tile.prototype.pipCount = function () {
-  return this.low + this.high;
-};
-
-Tile.prototype.otherSide = function (value) {
-  if (this.low === value) return this.high;
-  if (this.high === value) return this.low;
-  return null;
-};
-
-// --- Tile cache: shared instances ---
-
-var tileCache = {};
-
-function getTile(low, high) {
-  var lo = Math.min(low, high);
-  var hi = Math.max(low, high);
-  var key = lo + '-' + hi;
-  if (!tileCache[key]) {
-    tileCache[key] = new Tile(lo, hi);
-  }
-  return tileCache[key];
-}
-
-// Pre-populate cache with all 28 domino tiles
 (function () {
+  var idx = 0;
   for (var i = 0; i <= 6; i++) {
     for (var j = i; j <= 6; j++) {
-      getTile(i, j);
+      TILE_LOW[idx] = i;
+      TILE_HIGH[idx] = j;
+      TILE_PIPS[idx] = i + j;
+      TILE_IS_DOUBLE[idx] = (i === j) ? 1 : 0;
+      TILE_ID_TO_INDEX[i + '-' + j] = idx;
+
+      SUIT_MASK[i] |= (1 << idx);
+      if (i !== j) SUIT_MASK[j] |= (1 << idx);
+
+      if (i === j) DOUBLE_MASK |= (1 << idx);
+      if (i === 0 && j === 0) TILE_00_BIT = 1 << idx;
+
+      idx++;
     }
   }
 })();
 
-// --- Configurable evaluation weights ---
+// =====================================================================
+// PRECOMPUTED: new board end after placing tile on left/right
+// =====================================================================
+
+var NEW_END_LEFT = new Int8Array(28 * 8);
+var NEW_END_RIGHT = new Int8Array(28 * 8);
+
+(function () {
+  for (var t = 0; t < 28; t++) {
+    var lo = TILE_LOW[t], hi = TILE_HIGH[t];
+    for (var v = 0; v <= 6; v++) {
+      if (hi === v) {
+        NEW_END_LEFT[t * 8 + v] = lo;
+      } else if (lo === v) {
+        NEW_END_LEFT[t * 8 + v] = hi;
+      } else {
+        NEW_END_LEFT[t * 8 + v] = -1;
+      }
+      if (lo === v) {
+        NEW_END_RIGHT[t * 8 + v] = hi;
+      } else if (hi === v) {
+        NEW_END_RIGHT[t * 8 + v] = lo;
+      } else {
+        NEW_END_RIGHT[t * 8 + v] = -1;
+      }
+    }
+    NEW_END_LEFT[t * 8 + 7] = lo;
+    NEW_END_RIGHT[t * 8 + 7] = hi;
+  }
+})();
+
+// =====================================================================
+// POPCOUNT
+// =====================================================================
+
+function popcount(x) {
+  x = x - ((x >> 1) & 0x55555555);
+  x = (x & 0x33333333) + ((x >> 2) & 0x33333333);
+  x = (x + (x >> 4)) & 0x0f0f0f0f;
+  return (x * 0x01010101) >> 24;
+}
+
+// =====================================================================
+// EVALUATION WEIGHTS
+// =====================================================================
 
 var W_PIP         = 2;
 var W_MOBILITY    = 4;
@@ -69,14 +103,15 @@ var W_LOCKIN_BOTH = 15;
 var W_GHOST       = 10;
 var W_DOUBLE      = 0.5;
 
-// Move ordering weights
 var MO_DOMINO     = 1000;
 var MO_DOUBLE     = 12;
 var MO_PIP_MULT   = 1.5;
 var MO_FORCE_PASS = 25;
 var MO_GHOST      = 15;
 
-// --- Zobrist hashing setup ---
+// =====================================================================
+// ZOBRIST HASHING
+// =====================================================================
 
 var zobristSeed = 0x12345678;
 function xorshift32() {
@@ -86,18 +121,6 @@ function xorshift32() {
   return zobristSeed >>> 0;
 }
 
-// Map tile id strings to indices 0-27
-var TILE_ID_TO_INDEX = {};
-(function () {
-  var idx = 0;
-  for (var i = 0; i <= 6; i++) {
-    for (var j = i; j <= 6; j++) {
-      TILE_ID_TO_INDEX[i + '-' + j] = idx++;
-    }
-  }
-})();
-
-// Pre-compute Zobrist hash values
 var TILE_HASH = new Array(28);
 for (var ti = 0; ti < 28; ti++) {
   TILE_HASH[ti] = [xorshift32(), xorshift32()];
@@ -109,9 +132,11 @@ for (var ri = 0; ri < 8; ri++) RIGHT_HASH[ri] = xorshift32();
 var SIDE_HASH = xorshift32();
 var CONSPASS_HASH = [xorshift32(), xorshift32()];
 
-// --- Transposition Table ---
+// =====================================================================
+// TRANSPOSITION TABLE
+// =====================================================================
 
-var TT_SIZE = 1 << 20; // 1048576 entries (~10MB total)
+var TT_SIZE = 1 << 22;
 var TT_MASK = TT_SIZE - 1;
 var ttHash   = new Int32Array(TT_SIZE);
 var ttDepth  = new Int8Array(TT_SIZE);
@@ -159,166 +184,173 @@ function ttStore(hash, depth, flag, value, bestIdx, bestEnd) {
   }
 }
 
-// Compute initial Zobrist hash for the root position
-function computeHash(aiTiles, humanTiles, left, right, isAI, consPass) {
-  var h = 0;
-  for (var i = 0; i < aiTiles.length; i++) {
-    h ^= TILE_HASH[TILE_ID_TO_INDEX[aiTiles[i].id]][0];
+// =====================================================================
+// GLOBAL MUTABLE STATE
+// =====================================================================
+
+var gAiHand = 0;
+var gHumanHand = 0;
+var gLeft = 7;
+var gRight = 7;
+var gHash = 0;
+var gPly = 0;
+var gConsPass = 0;
+
+var gP1Who = -1, gP1L = 0, gP1R = 0, gP1Tile = -1;
+var gP2Who = -1, gP2L = 0, gP2R = 0;
+
+// =====================================================================
+// PER-PLY MOVE STACKS
+// =====================================================================
+
+var MAX_PLY = 64;
+var MOVE_BUF_SIZE = MAX_PLY * 28;
+var MOVE_TILE_BUF = new Int8Array(MOVE_BUF_SIZE);
+var MOVE_END_BUF  = new Int8Array(MOVE_BUF_SIZE);
+var MOVE_SCORE_BUF = new Float64Array(MOVE_BUF_SIZE);
+
+// =====================================================================
+// MOVE GENERATION
+// =====================================================================
+
+function generateMoves(hand, left, right, ply) {
+  var base = ply * 28;
+  var count = 0;
+
+  if (left === 7) {
+    var h = hand;
+    while (h) {
+      var bit = h & (-h);
+      var idx = 31 - Math.clz32(bit);
+      MOVE_TILE_BUF[base + count] = idx;
+      MOVE_END_BUF[base + count] = 0;
+      count++;
+      h ^= bit;
+    }
+    return count;
   }
-  for (var i = 0; i < humanTiles.length; i++) {
-    h ^= TILE_HASH[TILE_ID_TO_INDEX[humanTiles[i].id]][1];
+
+  var leftMask = SUIT_MASK[left] & hand;
+  var rightMask = SUIT_MASK[right] & hand;
+
+  var m = leftMask;
+  while (m) {
+    var bit = m & (-m);
+    var idx = 31 - Math.clz32(bit);
+    MOVE_TILE_BUF[base + count] = idx;
+    MOVE_END_BUF[base + count] = 0;
+    count++;
+    m ^= bit;
   }
-  h ^= LEFT_HASH[left === null ? 7 : left];
-  h ^= RIGHT_HASH[right === null ? 7 : right];
-  if (!isAI) h ^= SIDE_HASH;
-  if (consPass > 0) h ^= CONSPASS_HASH[Math.min(consPass, 1)];
-  return h;
-}
 
-// --- Search depth by game phase ---
-
-function getMaxDepth(totalTiles) {
-  if (totalTiles <= 10) return 50;  // full solve
-  if (totalTiles <= 14) return 28;  // deep solve
-  if (totalTiles <= 18) return 20;
-  if (totalTiles <= 22) return 16;
-  return 12;
-}
-
-// --- Lightweight helpers ---
-
-function simPlace(left, right, tile, end) {
-  if (left === null) {
-    return [tile.low, tile.high];
-  }
-  if (end === 'left') {
-    if (tile.high === left) return [tile.low, right];
-    return [tile.high, right];
+  if (left !== right) {
+    m = rightMask;
+    while (m) {
+      var bit = m & (-m);
+      var idx = 31 - Math.clz32(bit);
+      MOVE_TILE_BUF[base + count] = idx;
+      MOVE_END_BUF[base + count] = 1;
+      count++;
+      m ^= bit;
+    }
   } else {
-    if (tile.low === right) return [left, tile.high];
-    return [left, tile.low];
-  }
-}
-
-function getMoves(tiles, left, right) {
-  var moves = [];
-  if (left === null) {
-    for (var i = 0; i < tiles.length; i++) {
-      moves.push(i, -1);
-    }
-    return moves;
-  }
-  for (var i = 0; i < tiles.length; i++) {
-    var t = tiles[i];
-    var canL = (t.low === left || t.high === left);
-    var canR = (t.low === right || t.high === right);
-    if (canL) moves.push(i, 0);
-    if (canR && left !== right) {
-      moves.push(i, 1);
-    } else if (canR && left === right && !canL) {
-      moves.push(i, 1);
+    m = rightMask & ~leftMask;
+    while (m) {
+      var bit = m & (-m);
+      var idx = 31 - Math.clz32(bit);
+      MOVE_TILE_BUF[base + count] = idx;
+      MOVE_END_BUF[base + count] = 1;
+      count++;
+      m ^= bit;
     }
   }
-  return moves;
+
+  return count;
 }
 
-function countMoves(tiles, left, right) {
-  if (left === null) return tiles.length;
-  var c = 0;
-  for (var i = 0; i < tiles.length; i++) {
-    var t = tiles[i];
-    var canL = (t.low === left || t.high === left);
-    var canR = (t.low === right || t.high === right);
-    if (canL) c++;
-    if (canR && left !== right) c++;
-    else if (canR && left === right && !canL) c++;
+function countMovesBB(hand, left, right) {
+  if (left === 7) return popcount(hand);
+  var leftMask = SUIT_MASK[left] & hand;
+  var rightMask = SUIT_MASK[right] & hand;
+  if (left === right) {
+    return popcount(leftMask);
   }
-  return c;
+  return popcount(leftMask | rightMask);
 }
 
-function totalPips(tiles, left, right) {
+// =====================================================================
+// PIP COUNTING
+// =====================================================================
+
+function totalPipsBB(hand, left, right) {
   var sum = 0;
-  for (var i = 0; i < tiles.length; i++) {
-    var t = tiles[i];
-    if (t.low === 0 && t.high === 0 && left !== 0 && right !== 0) {
+  var h = hand;
+  while (h) {
+    var bit = h & (-h);
+    var idx = 31 - Math.clz32(bit);
+    if (idx === 0 && left !== 0 && right !== 0 && left !== 7) {
       sum += 13;
     } else {
-      sum += t.low + t.high;
+      sum += TILE_PIPS[idx];
     }
+    h ^= bit;
   }
   return sum;
 }
 
-function removeTile(tiles, idx) {
-  var a = new Array(tiles.length - 1);
-  for (var i = 0, j = 0; i < tiles.length; i++) {
-    if (i !== idx) a[j++] = tiles[i];
-  }
-  return a;
-}
+// =====================================================================
+// TERMINAL SCORING
+// =====================================================================
 
-function has00(tiles) {
-  for (var i = 0; i < tiles.length; i++) {
-    if (tiles[i].low === 0 && tiles[i].high === 0) return true;
-  }
-  return false;
-}
-
-// --- Terminal scoring ---
-
-function scoreDomino(winnerIsAI, loserTiles, left, right) {
-  var pips = totalPips(loserTiles, left, right);
+function scoreDominoBB(winnerIsAI, loserHand, left, right) {
+  var pips = totalPipsBB(loserHand, left, right);
   return winnerIsAI ? pips : -pips;
 }
 
-// Puppeteer detection
-function detectAggressor(p1Who, p1L, p1R, p1Tile, p2Who, p2L, p2R,
-                         lastPlacerTiles, otherTiles) {
-  if (p2Who === -1 || p1Tile === null) return p1Who;
+// =====================================================================
+// PUPPETEER / AGGRESSOR DETECTION
+// =====================================================================
 
-  var forcedHand = new Array(lastPlacerTiles.length + 1);
-  for (var i = 0; i < lastPlacerTiles.length; i++) {
-    forcedHand[i] = lastPlacerTiles[i];
-  }
-  forcedHand[lastPlacerTiles.length] = p1Tile;
+function detectAggressorBB(p1Who, p1L, p1R, p1Tile, p2Who, p2L, p2R,
+                            lastPlacerHand, otherHand) {
+  if (p2Who === -1 || p1Tile === -1) return p1Who;
 
-  var uniqueCount = 0;
-  var theTile = null;
-  for (var i = 0; i < forcedHand.length; i++) {
-    var t = forcedHand[i];
-    var canPlay = (t.low === p2L || t.high === p2L ||
-                   t.low === p2R || t.high === p2R);
-    if (canPlay) {
-      if (theTile === null || theTile !== t) {
-        if (uniqueCount === 0) {
-          theTile = t;
-          uniqueCount = 1;
-        } else if (uniqueCount === 1 && theTile !== t) {
-          return p1Who;
-        }
-      }
-    }
+  var forcedHand = lastPlacerHand | (1 << p1Tile);
+
+  var legalMask = 0;
+  if (p2L === 7) {
+    legalMask = forcedHand;
+  } else {
+    legalMask = (SUIT_MASK[p2L] | SUIT_MASK[p2R]) & forcedHand;
+    if (p2L === p2R) legalMask = SUIT_MASK[p2L] & forcedHand;
   }
 
-  if (uniqueCount !== 1) return p1Who;
+  var legalCount = popcount(legalMask);
+  if (legalCount !== 1) return p1Who;
 
-  var canL = (theTile.low === p2L || theTile.high === p2L);
-  var canR = (theTile.low === p2R || theTile.high === p2R);
+  var theTileIdx = 31 - Math.clz32(legalMask & (-legalMask));
+  var lo = TILE_LOW[theTileIdx], hi = TILE_HIGH[theTileIdx];
+
+  var canL = (lo === p2L || hi === p2L) && p2L !== 7;
+  var canR = (lo === p2R || hi === p2R) && p2R !== 7;
+  if (p2L === 7) { canL = true; canR = false; }
   if (p2L === p2R && canL) canR = false;
 
-  var forcedHandAfter = lastPlacerTiles;
+  var forcedHandAfter = lastPlacerHand;
 
   if (canL) {
-    var newEnds = simPlace(p2L, p2R, theTile, 'left');
-    if (countMoves(otherTiles, newEnds[0], newEnds[1]) > 0 ||
-        countMoves(forcedHandAfter, newEnds[0], newEnds[1]) > 0) {
+    var newL = NEW_END_LEFT[theTileIdx * 8 + (p2L === 7 ? 7 : p2L)];
+    var newR = (p2L === 7) ? NEW_END_RIGHT[theTileIdx * 8 + 7] : p2R;
+    if (countMovesBB(otherHand, newL, newR) > 0 ||
+        countMovesBB(forcedHandAfter, newL, newR) > 0) {
       return p1Who;
     }
   }
   if (canR) {
-    var newEnds = simPlace(p2L, p2R, theTile, 'right');
-    if (countMoves(otherTiles, newEnds[0], newEnds[1]) > 0 ||
-        countMoves(forcedHandAfter, newEnds[0], newEnds[1]) > 0) {
+    var newR2 = NEW_END_RIGHT[theTileIdx * 8 + p2R];
+    var newL2 = p2L;
+    if (countMovesBB(otherHand, newL2, newR2) > 0 ||
+        countMovesBB(forcedHandAfter, newL2, newR2) > 0) {
       return p1Who;
     }
   }
@@ -326,16 +358,22 @@ function detectAggressor(p1Who, p1L, p1R, p1Tile, p2Who, p2L, p2R,
   return p2Who;
 }
 
-function scoreBlockPuppeteer(aiTiles, humanTiles, left, right,
-                             p1Who, p1L, p1R, p1Tile, p2Who, p2L, p2R) {
-  var lastPlacerTiles = (p1Who === 1) ? aiTiles : humanTiles;
-  var otherTiles = (p1Who === 1) ? humanTiles : aiTiles;
+function scoreBlockBB() {
+  var lastPlacerHand, otherHand;
+  if (gP1Who === 1) {
+    lastPlacerHand = gAiHand;
+    otherHand = gHumanHand;
+  } else {
+    lastPlacerHand = gHumanHand;
+    otherHand = gAiHand;
+  }
 
-  var aggressor = detectAggressor(p1Who, p1L, p1R, p1Tile, p2Who, p2L, p2R,
-                                  lastPlacerTiles, otherTiles);
+  var aggressor = detectAggressorBB(gP1Who, gP1L, gP1R, gP1Tile,
+                                     gP2Who, gP2L, gP2R,
+                                     lastPlacerHand, otherHand);
 
-  var aiPips = totalPips(aiTiles, left, right);
-  var humanPips = totalPips(humanTiles, left, right);
+  var aiPips = totalPipsBB(gAiHand, gLeft, gRight);
+  var humanPips = totalPipsBB(gHumanHand, gLeft, gRight);
 
   var aggrPips = (aggressor === 1) ? aiPips : humanPips;
   var oppPips = (aggressor === 1) ? humanPips : aiPips;
@@ -349,38 +387,39 @@ function scoreBlockPuppeteer(aiTiles, humanTiles, left, right,
   }
 }
 
-// --- Static evaluation ---
+// =====================================================================
+// STATIC EVALUATION
+// =====================================================================
 
-function evaluate(aiTiles, humanTiles, left, right) {
-  var aiPips = totalPips(aiTiles, left, right);
-  var humanPips = totalPips(humanTiles, left, right);
+function evaluateBB() {
+  var left = gLeft, right = gRight;
+  var aiHand = gAiHand, humanHand = gHumanHand;
+
+  var aiPips = totalPipsBB(aiHand, left, right);
+  var humanPips = totalPipsBB(humanHand, left, right);
 
   var pipScore = (humanPips - aiPips) * W_PIP;
 
-  var aiMob = countMoves(aiTiles, left, right);
-  var humanMob = countMoves(humanTiles, left, right);
+  var aiMob = countMovesBB(aiHand, left, right);
+  var humanMob = countMovesBB(humanHand, left, right);
   var mobScore = (aiMob - humanMob) * W_MOBILITY;
 
-  var tileScore = (humanTiles.length - aiTiles.length) * W_TILE;
+  var aiCount = popcount(aiHand);
+  var humanCount = popcount(humanHand);
+  var tileScore = (humanCount - aiCount) * W_TILE;
 
   var suitScore = 0;
-  if (left !== null) {
-    var aiL = 0, aiR = 0, hL = 0, hR = 0;
-    for (var i = 0; i < aiTiles.length; i++) {
-      if (aiTiles[i].matches(left)) aiL++;
-      if (left !== right && aiTiles[i].matches(right)) aiR++;
-    }
-    for (var i = 0; i < humanTiles.length; i++) {
-      if (humanTiles[i].matches(left)) hL++;
-      if (left !== right && humanTiles[i].matches(right)) hR++;
-    }
-
+  if (left !== 7) {
     if (left === right) {
-      // Both ends same value — suit control is doubly important
+      var aiL = popcount(SUIT_MASK[left] & aiHand);
+      var hL = popcount(SUIT_MASK[left] & humanHand);
       suitScore = (aiL - hL) * W_SUIT * 2;
-      // Human void on this value = locked on both ends
       if (hL === 0) suitScore += W_LOCKIN * 2 + W_LOCKIN_BOTH;
     } else {
+      var aiL = popcount(SUIT_MASK[left] & aiHand);
+      var aiR = popcount(SUIT_MASK[right] & aiHand);
+      var hL = popcount(SUIT_MASK[left] & humanHand);
+      var hR = popcount(SUIT_MASK[right] & humanHand);
       suitScore = (aiL + aiR - hL - hR) * W_SUIT;
       if (hL === 0) suitScore += W_LOCKIN;
       if (hR === 0) suitScore += W_LOCKIN;
@@ -389,28 +428,35 @@ function evaluate(aiTiles, humanTiles, left, right) {
   }
 
   var ghost = 0;
-  if (has00(humanTiles) && left !== null && left !== 0 && right !== 0) {
-    ghost = W_GHOST;
-  }
-  if (has00(aiTiles) && left !== null && left !== 0 && right !== 0) {
-    ghost -= W_GHOST;
+  if (left !== 7 && left !== 0 && right !== 0) {
+    if (humanHand & TILE_00_BIT) ghost = W_GHOST;
+    if (aiHand & TILE_00_BIT) ghost -= W_GHOST;
   }
 
   var doublePen = 0;
-  for (var i = 0; i < aiTiles.length; i++) {
-    if (aiTiles[i].isDouble()) doublePen -= (aiTiles[i].pipCount() + 2) * W_DOUBLE;
+  var aiDoubles = aiHand & DOUBLE_MASK;
+  while (aiDoubles) {
+    var bit = aiDoubles & (-aiDoubles);
+    var idx = 31 - Math.clz32(bit);
+    doublePen -= (TILE_PIPS[idx] + 2) * W_DOUBLE;
+    aiDoubles ^= bit;
   }
-  for (var i = 0; i < humanTiles.length; i++) {
-    if (humanTiles[i].isDouble()) doublePen += (humanTiles[i].pipCount() + 2) * W_DOUBLE;
+  var humanDoubles = humanHand & DOUBLE_MASK;
+  while (humanDoubles) {
+    var bit = humanDoubles & (-humanDoubles);
+    var idx = 31 - Math.clz32(bit);
+    doublePen += (TILE_PIPS[idx] + 2) * W_DOUBLE;
+    humanDoubles ^= bit;
   }
 
   return pipScore + mobScore + tileScore + suitScore + ghost + doublePen;
 }
 
-// --- Move ordering ---
+// =====================================================================
+// MOVE ORDERING
+// =====================================================================
 
-var MAX_DEPTH_SLOTS = 60;
-// Killer moves use global tile index (TILE_ID_TO_INDEX), not array position
+var MAX_DEPTH_SLOTS = 64;
 var killerTileId = new Int8Array(MAX_DEPTH_SLOTS);
 var killerEnd = new Int8Array(MAX_DEPTH_SLOTS);
 
@@ -429,258 +475,309 @@ function clearMoveOrderingData() {
   }
 }
 
-function orderMoves(moves, myTiles, oppTiles, left, right, isAI, depth) {
-  var n = moves.length / 2;
-  if (n <= 1) return moves;
+function orderMovesAtPly(ply, numMoves, isAI, depth) {
+  if (numMoves <= 1) return;
 
-  var scored = new Array(n);
-  for (var i = 0; i < n; i++) {
-    var tIdx = moves[i * 2];
-    var end = moves[i * 2 + 1];
-    var tile = myTiles[tIdx];
+  var base = ply * 28;
+  var myHand = isAI ? gAiHand : gHumanHand;
+  var oppHand = isAI ? gHumanHand : gAiHand;
+  var left = gLeft, right = gRight;
+
+  for (var i = 0; i < numMoves; i++) {
+    var tIdx = MOVE_TILE_BUF[base + i];
+    var end = MOVE_END_BUF[base + i];
     var s = 0;
 
-    if (myTiles.length === 1) s += MO_DOMINO;
+    if (popcount(myHand) === 1) s += MO_DOMINO;
 
-    // Killer move bonus (uses global tile identity, not array index)
-    var tileGlobalIdx = TILE_ID_TO_INDEX[tile.id];
     if (depth >= 0 && depth < MAX_DEPTH_SLOTS &&
-        killerTileId[depth] === tileGlobalIdx && killerEnd[depth] === end) {
+        killerTileId[depth] === tIdx && killerEnd[depth] === end) {
       s += 5000;
     }
 
-    // History heuristic bonus
-    var endCode = end + 1;
-    s += historyScore[tileGlobalIdx][endCode];
+    s += historyScore[tIdx][end + 1];
 
-    if (tile.isDouble()) s += MO_DOUBLE;
+    if (TILE_IS_DOUBLE[tIdx]) s += MO_DOUBLE;
 
-    s += tile.pipCount() * MO_PIP_MULT;
+    s += TILE_PIPS[tIdx] * MO_PIP_MULT;
 
-    var endStr = (end === 0 || end === -1) ? 'left' : 'right';
-    var newEnds = simPlace(left, right, tile, endStr);
-    var oppMob = countMoves(oppTiles, newEnds[0], newEnds[1]);
-    if (oppMob === 0) s += MO_FORCE_PASS;
+    var newL, newR;
+    if (left === 7) {
+      newL = TILE_LOW[tIdx];
+      newR = TILE_HIGH[tIdx];
+    } else if (end === 0) {
+      newL = NEW_END_LEFT[tIdx * 8 + left];
+      newR = right;
+    } else {
+      newL = left;
+      newR = NEW_END_RIGHT[tIdx * 8 + right];
+    }
+    if (countMovesBB(oppHand, newL, newR) === 0) s += MO_FORCE_PASS;
 
-    if (isAI && has00(oppTiles) && newEnds[0] !== 0 && newEnds[1] !== 0) {
+    if (isAI && (oppHand & TILE_00_BIT) && newL !== 0 && newR !== 0) {
       s += MO_GHOST;
     }
 
-    scored[i] = { i: i, s: s };
+    MOVE_SCORE_BUF[base + i] = s;
   }
 
-  scored.sort(function (a, b) { return b.s - a.s; });
-
-  var ordered = new Array(n * 2);
-  for (var i = 0; i < n; i++) {
-    var oi = scored[i].i;
-    ordered[i * 2] = moves[oi * 2];
-    ordered[i * 2 + 1] = moves[oi * 2 + 1];
+  for (var i = 1; i < numMoves; i++) {
+    var scoreI = MOVE_SCORE_BUF[base + i];
+    var tileI = MOVE_TILE_BUF[base + i];
+    var endI = MOVE_END_BUF[base + i];
+    var j = i - 1;
+    while (j >= 0 && MOVE_SCORE_BUF[base + j] < scoreI) {
+      MOVE_SCORE_BUF[base + j + 1] = MOVE_SCORE_BUF[base + j];
+      MOVE_TILE_BUF[base + j + 1] = MOVE_TILE_BUF[base + j];
+      MOVE_END_BUF[base + j + 1] = MOVE_END_BUF[base + j];
+      j--;
+    }
+    MOVE_SCORE_BUF[base + j + 1] = scoreI;
+    MOVE_TILE_BUF[base + j + 1] = tileI;
+    MOVE_END_BUF[base + j + 1] = endI;
   }
-  return ordered;
 }
 
-// --- Minimax with Alpha-Beta ---
+// =====================================================================
+// MINIMAX WITH ALPHA-BETA
+// =====================================================================
 
 var nodeCount = 0;
-var NODE_LIMIT = 5000000;
+var NODE_LIMIT = 20000000;
+var timeStart = 0;
+var TIME_BUDGET = 5000;
 
-function minimax(aiTiles, humanTiles, left, right, isAI, depth, alpha, beta,
-                 consPass, p1Who, p1L, p1R, p1Tile, p2Who, p2L, p2R, hash, ext) {
+function minimaxBB(isAI, depth, alpha, beta, ext) {
   nodeCount++;
 
   if (nodeCount >= NODE_LIMIT) {
-    return evaluate(aiTiles, humanTiles, left, right);
+    return evaluateBB();
   }
 
-  var myTiles = isAI ? aiTiles : humanTiles;
-  var oppTiles = isAI ? humanTiles : aiTiles;
-  var moves = getMoves(myTiles, left, right);
-  var numMoves = moves.length / 2;
+  var myHand = isAI ? gAiHand : gHumanHand;
+  var numMoves = generateMoves(myHand, gLeft, gRight, gPly);
 
-  // No legal moves — must pass
+  // No legal moves: must pass
   if (numMoves === 0) {
-    var newConsPass = consPass + 1;
+    var newConsPass = gConsPass + 1;
     if (newConsPass >= 2) {
-      return scoreBlockPuppeteer(aiTiles, humanTiles, left, right,
-                                 p1Who, p1L, p1R, p1Tile, p2Who, p2L, p2R);
+      return scoreBlockBB();
     }
-    // Pass — update hash: flip side, update consPass
-    var passHash = hash ^ SIDE_HASH;
-    if (consPass > 0) passHash ^= CONSPASS_HASH[Math.min(consPass, 1)];
-    if (newConsPass > 0) passHash ^= CONSPASS_HASH[Math.min(newConsPass, 1)];
-    return minimax(aiTiles, humanTiles, left, right, !isAI, depth, alpha, beta,
-                   newConsPass, p1Who, p1L, p1R, p1Tile, p2Who, p2L, p2R, passHash, ext);
+    var savedConsPass = gConsPass;
+    var savedHash = gHash;
+
+    gHash ^= SIDE_HASH;
+    if (gConsPass > 0) gHash ^= CONSPASS_HASH[1];
+    gConsPass = newConsPass;
+    if (gConsPass > 0) gHash ^= CONSPASS_HASH[1];
+
+    var score = minimaxBB(!isAI, depth, alpha, beta, ext);
+
+    gHash = savedHash;
+    gConsPass = savedConsPass;
+    return score;
   }
 
-  // Depth limit with quiescence extension
+  // Depth limit with quiescence
   if (depth <= 0) {
     var extended = false;
     if (ext < 6) {
-      var myMoveCount = numMoves;
-      var totalRemaining = aiTiles.length + humanTiles.length;
-      if (myMoveCount === 1) {
+      var totalRemaining = popcount(gAiHand) + popcount(gHumanHand);
+      if (numMoves === 1) {
         extended = true;
       } else if (totalRemaining <= 8) {
-        var oppMoveCount = countMoves(oppTiles, left, right);
-        if (oppMoveCount <= 1) extended = true;
+        var oppHand = isAI ? gHumanHand : gAiHand;
+        if (countMovesBB(oppHand, gLeft, gRight) <= 1) extended = true;
       }
     }
     if (extended) {
       depth = 1;
       ext = ext + 1;
     } else {
-      return evaluate(aiTiles, humanTiles, left, right);
+      return evaluateBB();
     }
   }
 
   // TT probe
-  var ttHit = ttProbe(hash, depth, alpha, beta);
-  var ttBestMoveIdx = -1, ttBestMoveEnd = -1;
+  var ttHit = ttProbe(gHash, depth, alpha, beta);
+  var ttBestTile = -1, ttBestEndVal = -1;
   if (ttHit) {
     if (ttHit.score !== null) return ttHit.score;
-    ttBestMoveIdx = ttHit.bestIdx;
-    ttBestMoveEnd = ttHit.bestEnd;
+    ttBestTile = ttHit.bestIdx;
+    ttBestEndVal = ttHit.bestEnd;
   }
 
-  // Order moves
+  // Move ordering
   if (numMoves > 2) {
-    moves = orderMoves(moves, myTiles, oppTiles, left, right, isAI, depth);
-    numMoves = moves.length / 2;
+    orderMovesAtPly(gPly, numMoves, isAI, depth);
   }
 
-  // If TT has a best move (global tile index), move it to front
-  if (ttBestMoveIdx >= 0) {
+  // TT best move to front
+  if (ttBestTile >= 0) {
+    var base = gPly * 28;
     for (var mi = 1; mi < numMoves; mi++) {
-      var miGIdx = TILE_ID_TO_INDEX[myTiles[moves[mi * 2]].id];
-      if (miGIdx === ttBestMoveIdx && moves[mi * 2 + 1] === ttBestMoveEnd) {
-        var tmpI = moves[0], tmpE = moves[1];
-        moves[0] = moves[mi * 2];
-        moves[1] = moves[mi * 2 + 1];
-        moves[mi * 2] = tmpI;
-        moves[mi * 2 + 1] = tmpE;
+      if (MOVE_TILE_BUF[base + mi] === ttBestTile &&
+          MOVE_END_BUF[base + mi] === ttBestEndVal) {
+        var tmpT = MOVE_TILE_BUF[base];
+        var tmpE = MOVE_END_BUF[base];
+        MOVE_TILE_BUF[base] = MOVE_TILE_BUF[base + mi];
+        MOVE_END_BUF[base] = MOVE_END_BUF[base + mi];
+        MOVE_TILE_BUF[base + mi] = tmpT;
+        MOVE_END_BUF[base + mi] = tmpE;
         break;
       }
     }
   }
+
+  // Save state for unmake
+  var savedLeft = gLeft;
+  var savedRight = gRight;
+  var savedHash = gHash;
+  var savedConsPass = gConsPass;
+  var savedP1Who = gP1Who, savedP1L = gP1L, savedP1R = gP1R, savedP1Tile = gP1Tile;
+  var savedP2Who = gP2Who, savedP2L = gP2L, savedP2R = gP2R;
+  var savedPly = gPly;
 
   var who = isAI ? 1 : 0;
   var bestMoveIdx = -1, bestMoveEnd = -1;
   var origAlpha = alpha;
   var origBeta = beta;
+  var base = gPly * 28;
 
   if (isAI) {
-    // Maximizing
+    // === MAXIMIZING ===
     var best = -100000;
     for (var i = 0; i < numMoves; i++) {
-      var tIdx = moves[i * 2];
-      var end = moves[i * 2 + 1];
-      var tile = myTiles[tIdx];
-      var endStr = (end === 0 || end === -1) ? 'left' : 'right';
-      var newEnds = simPlace(left, right, tile, endStr);
-      var newAI = removeTile(aiTiles, tIdx);
-      var tileGIdx = TILE_ID_TO_INDEX[tile.id];
+      var tIdx = MOVE_TILE_BUF[base + i];
+      var end = MOVE_END_BUF[base + i];
 
-      // Terminal: AI domino
-      if (newAI.length === 0) {
-        var sc = scoreDomino(true, humanTiles, newEnds[0], newEnds[1]);
-        if (sc > best) { best = sc; bestMoveIdx = tileGIdx; bestMoveEnd = end; }
-        if (best > alpha) alpha = best;
-        if (beta <= alpha) break;
-        continue;
+      var bit = 1 << tIdx;
+      gAiHand ^= bit;
+
+      var newL, newR;
+      if (savedLeft === 7) {
+        newL = TILE_LOW[tIdx];
+        newR = TILE_HIGH[tIdx];
+      } else if (end === 0) {
+        newL = NEW_END_LEFT[tIdx * 8 + savedLeft];
+        newR = savedRight;
+      } else {
+        newL = savedLeft;
+        newR = NEW_END_RIGHT[tIdx * 8 + savedRight];
+      }
+      gLeft = newL;
+      gRight = newR;
+
+      gHash = savedHash;
+      gHash ^= TILE_HASH[tIdx][0];
+      gHash ^= LEFT_HASH[savedLeft];
+      gHash ^= LEFT_HASH[newL];
+      gHash ^= RIGHT_HASH[savedRight];
+      gHash ^= RIGHT_HASH[newR];
+      gHash ^= SIDE_HASH;
+      if (savedConsPass > 0) gHash ^= CONSPASS_HASH[1];
+      gConsPass = 0;
+
+      gP2Who = savedP1Who; gP2L = savedP1L; gP2R = savedP1R;
+      gP1Who = 1; gP1L = newL; gP1R = newR; gP1Tile = tIdx;
+
+      gPly = savedPly + 1;
+
+      var sc;
+
+      if (gAiHand === 0) {
+        sc = scoreDominoBB(true, gHumanHand, newL, newR);
+      } else if (countMovesBB(gHumanHand, newL, newR) === 0 &&
+                 countMovesBB(gAiHand, newL, newR) === 0) {
+        sc = scoreBlockBB();
+      } else {
+        sc = minimaxBB(false, depth - 1, alpha, beta, ext);
       }
 
-      // Terminal: immediate lock
-      if (countMoves(humanTiles, newEnds[0], newEnds[1]) === 0 &&
-          countMoves(newAI, newEnds[0], newEnds[1]) === 0) {
-        var sc = scoreBlockPuppeteer(newAI, humanTiles, newEnds[0], newEnds[1],
-                                     who, newEnds[0], newEnds[1], tile,
-                                     p1Who, p1L, p1R);
-        if (sc > best) { best = sc; bestMoveIdx = tileGIdx; bestMoveEnd = end; }
-        if (best > alpha) alpha = best;
-        if (beta <= alpha) break;
-        continue;
-      }
+      gAiHand ^= bit;
+      gLeft = savedLeft; gRight = savedRight;
+      gHash = savedHash; gConsPass = savedConsPass;
+      gP1Who = savedP1Who; gP1L = savedP1L; gP1R = savedP1R; gP1Tile = savedP1Tile;
+      gP2Who = savedP2Who; gP2L = savedP2L; gP2R = savedP2R;
+      gPly = savedPly;
 
-      // Incremental hash update
-      var childHash = hash;
-      childHash ^= TILE_HASH[tileGIdx][0];
-      childHash ^= LEFT_HASH[left === null ? 7 : left];
-      childHash ^= LEFT_HASH[newEnds[0]];
-      childHash ^= RIGHT_HASH[right === null ? 7 : right];
-      childHash ^= RIGHT_HASH[newEnds[1]];
-      childHash ^= SIDE_HASH;
-      if (consPass > 0) childHash ^= CONSPASS_HASH[Math.min(consPass, 1)];
-
-      var sc = minimax(newAI, humanTiles, newEnds[0], newEnds[1], false, depth - 1, alpha, beta,
-                       0, who, newEnds[0], newEnds[1], tile, p1Who, p1L, p1R, childHash, ext);
-      if (sc > best) { best = sc; bestMoveIdx = tileGIdx; bestMoveEnd = end; }
+      if (sc > best) { best = sc; bestMoveIdx = tIdx; bestMoveEnd = end; }
       if (best > alpha) alpha = best;
       if (beta <= alpha) {
-        // Beta cutoff — record killer move (global tile index) and update history
         if (depth >= 0 && depth < MAX_DEPTH_SLOTS) {
-          killerTileId[depth] = tileGIdx;
+          killerTileId[depth] = tIdx;
           killerEnd[depth] = end;
         }
-        historyScore[tileGIdx][end + 1] += depth * depth;
+        historyScore[tIdx][end + 1] += depth * depth;
         break;
       }
     }
 
   } else {
-    // Minimizing (human turn)
+    // === MINIMIZING ===
     var best = 100000;
     for (var i = 0; i < numMoves; i++) {
-      var tIdx = moves[i * 2];
-      var end = moves[i * 2 + 1];
-      var tile = myTiles[tIdx];
-      var endStr = (end === 0 || end === -1) ? 'left' : 'right';
-      var newEnds = simPlace(left, right, tile, endStr);
-      var newHuman = removeTile(humanTiles, tIdx);
-      var tileGIdx = TILE_ID_TO_INDEX[tile.id];
+      var tIdx = MOVE_TILE_BUF[base + i];
+      var end = MOVE_END_BUF[base + i];
 
-      // Terminal: human domino
-      if (newHuman.length === 0) {
-        var sc = scoreDomino(false, aiTiles, newEnds[0], newEnds[1]);
-        if (sc < best) { best = sc; bestMoveIdx = tileGIdx; bestMoveEnd = end; }
-        if (best < beta) beta = best;
-        if (beta <= alpha) break;
-        continue;
+      var bit = 1 << tIdx;
+      gHumanHand ^= bit;
+
+      var newL, newR;
+      if (savedLeft === 7) {
+        newL = TILE_LOW[tIdx];
+        newR = TILE_HIGH[tIdx];
+      } else if (end === 0) {
+        newL = NEW_END_LEFT[tIdx * 8 + savedLeft];
+        newR = savedRight;
+      } else {
+        newL = savedLeft;
+        newR = NEW_END_RIGHT[tIdx * 8 + savedRight];
+      }
+      gLeft = newL;
+      gRight = newR;
+
+      gHash = savedHash;
+      gHash ^= TILE_HASH[tIdx][1];
+      gHash ^= LEFT_HASH[savedLeft];
+      gHash ^= LEFT_HASH[newL];
+      gHash ^= RIGHT_HASH[savedRight];
+      gHash ^= RIGHT_HASH[newR];
+      gHash ^= SIDE_HASH;
+      if (savedConsPass > 0) gHash ^= CONSPASS_HASH[1];
+      gConsPass = 0;
+
+      gP2Who = savedP1Who; gP2L = savedP1L; gP2R = savedP1R;
+      gP1Who = 0; gP1L = newL; gP1R = newR; gP1Tile = tIdx;
+
+      gPly = savedPly + 1;
+
+      var sc;
+
+      if (gHumanHand === 0) {
+        sc = scoreDominoBB(false, gAiHand, newL, newR);
+      } else if (countMovesBB(gAiHand, newL, newR) === 0 &&
+                 countMovesBB(gHumanHand, newL, newR) === 0) {
+        sc = scoreBlockBB();
+      } else {
+        sc = minimaxBB(true, depth - 1, alpha, beta, ext);
       }
 
-      // Terminal: immediate lock
-      if (countMoves(aiTiles, newEnds[0], newEnds[1]) === 0 &&
-          countMoves(newHuman, newEnds[0], newEnds[1]) === 0) {
-        var sc = scoreBlockPuppeteer(aiTiles, newHuman, newEnds[0], newEnds[1],
-                                     who, newEnds[0], newEnds[1], tile,
-                                     p1Who, p1L, p1R);
-        if (sc < best) { best = sc; bestMoveIdx = tileGIdx; bestMoveEnd = end; }
-        if (best < beta) beta = best;
-        if (beta <= alpha) break;
-        continue;
-      }
+      gHumanHand ^= bit;
+      gLeft = savedLeft; gRight = savedRight;
+      gHash = savedHash; gConsPass = savedConsPass;
+      gP1Who = savedP1Who; gP1L = savedP1L; gP1R = savedP1R; gP1Tile = savedP1Tile;
+      gP2Who = savedP2Who; gP2L = savedP2L; gP2R = savedP2R;
+      gPly = savedPly;
 
-      // Incremental hash update
-      var childHash = hash;
-      childHash ^= TILE_HASH[tileGIdx][1];
-      childHash ^= LEFT_HASH[left === null ? 7 : left];
-      childHash ^= LEFT_HASH[newEnds[0]];
-      childHash ^= RIGHT_HASH[right === null ? 7 : right];
-      childHash ^= RIGHT_HASH[newEnds[1]];
-      childHash ^= SIDE_HASH;
-      if (consPass > 0) childHash ^= CONSPASS_HASH[Math.min(consPass, 1)];
-
-      var sc = minimax(aiTiles, newHuman, newEnds[0], newEnds[1], true, depth - 1, alpha, beta,
-                       0, who, newEnds[0], newEnds[1], tile, p1Who, p1L, p1R, childHash, ext);
-      if (sc < best) { best = sc; bestMoveIdx = tileGIdx; bestMoveEnd = end; }
+      if (sc < best) { best = sc; bestMoveIdx = tIdx; bestMoveEnd = end; }
       if (best < beta) beta = best;
       if (beta <= alpha) {
-        // Alpha cutoff — record killer (global tile index) and history
         if (depth >= 0 && depth < MAX_DEPTH_SLOTS) {
-          killerTileId[depth] = tileGIdx;
+          killerTileId[depth] = tIdx;
           killerEnd[depth] = end;
         }
-        historyScore[tileGIdx][end + 1] += depth * depth;
+        historyScore[tIdx][end + 1] += depth * depth;
         break;
       }
     }
@@ -695,158 +792,209 @@ function minimax(aiTiles, humanTiles, left, right, isAI, depth, alpha, beta,
   } else {
     ttF = TT_EXACT;
   }
-  ttStore(hash, depth, ttF, best, bestMoveIdx, bestMoveEnd);
+  ttStore(gHash, depth, ttF, best, bestMoveIdx, bestMoveEnd);
 
   return best;
 }
 
-// --- Find legal move helper (maps internal tile+end to legalMoves entry) ---
+// =====================================================================
+// COMPUTE ROOT HASH
+// =====================================================================
 
-function findLegalMove(legalMoves, tile, endStr) {
-  for (var i = 0; i < legalMoves.length; i++) {
-    var lm = legalMoves[i];
-    var lmTile = getTile(lm.tileLow, lm.tileHigh);
-    if (lmTile === tile && lm.end === endStr) {
-      return lm;
-    }
+function computeRootHash(aiHand, humanHand, left, right, isAI, consPass) {
+  var h = 0;
+  var a = aiHand;
+  while (a) {
+    var bit = a & (-a);
+    var idx = 31 - Math.clz32(bit);
+    h ^= TILE_HASH[idx][0];
+    a ^= bit;
   }
-  // Fallback: same tile, any end
-  for (var i = 0; i < legalMoves.length; i++) {
-    var lm = legalMoves[i];
-    var lmTile = getTile(lm.tileLow, lm.tileHigh);
-    if (lmTile === tile) return lm;
+  var hu = humanHand;
+  while (hu) {
+    var bit = hu & (-hu);
+    var idx = 31 - Math.clz32(bit);
+    h ^= TILE_HASH[idx][1];
+    hu ^= bit;
   }
-  return legalMoves[0];
+  h ^= LEFT_HASH[left];
+  h ^= RIGHT_HASH[right];
+  if (!isAI) h ^= SIDE_HASH;
+  if (consPass > 0) h ^= CONSPASS_HASH[1];
+  return h;
 }
 
-// --- Hard AI search (top-level, mirrors AIPlayer.chooseMoveHard) ---
+// =====================================================================
+// MAIN SEARCH ENTRY POINT (for worker)
+// =====================================================================
 
-function chooseMoveHard(aiTiles, humanTiles, left, right, moveHistory, legalMoves) {
-  var totalTiles = aiTiles.length + humanTiles.length;
-  var depthCeiling = getMaxDepth(totalTiles);
+function chooseMoveHard(aiTileDescs, humanTileDescs, left, right, moveHistory, legalMoves) {
+  // Convert to bitmasks
+  gAiHand = 0;
+  for (var i = 0; i < aiTileDescs.length; i++) {
+    var lo = Math.min(aiTileDescs[i].low, aiTileDescs[i].high);
+    var hi = Math.max(aiTileDescs[i].low, aiTileDescs[i].high);
+    gAiHand |= (1 << TILE_ID_TO_INDEX[lo + '-' + hi]);
+  }
+  gHumanHand = 0;
+  for (var i = 0; i < humanTileDescs.length; i++) {
+    var lo = Math.min(humanTileDescs[i].low, humanTileDescs[i].high);
+    var hi = Math.max(humanTileDescs[i].low, humanTileDescs[i].high);
+    gHumanHand |= (1 << TILE_ID_TO_INDEX[lo + '-' + hi]);
+  }
 
-  ttClear();
-  clearMoveOrderingData();
+  gLeft = (left === null) ? 7 : left;
+  gRight = (right === null) ? 7 : right;
+  gPly = 0;
+  gConsPass = 0;
 
-  // Seed placement history from moveHistory (last 2 non-pass entries)
-  var p1Who = -1, p1L = 0, p1R = 0, p1Tile = null;
-  var p2Who = -1, p2L = 0, p2R = 0;
+  // Seed Puppeteer history
+  gP1Who = -1; gP1L = 0; gP1R = 0; gP1Tile = -1;
+  gP2Who = -1; gP2L = 0; gP2R = 0;
   var placementCount = 0;
   for (var hi = moveHistory.length - 1; hi >= 0 && placementCount < 2; hi--) {
-    var entry = moveHistory[hi];
-    if (!entry.pass) {
+    if (!moveHistory[hi].pass) {
       if (placementCount === 0) {
-        p1Who = (entry.player === 'ai') ? 1 : 0;
-        p1L = entry.boardLeft;
-        p1R = entry.boardRight;
-        p1Tile = getTile(entry.tileLow, entry.tileHigh);
+        gP1Who = (moveHistory[hi].player === 'ai') ? 1 : 0;
+        gP1L = moveHistory[hi].boardLeft;
+        gP1R = moveHistory[hi].boardRight;
+        // Reconstruct tile index
+        var tLo = Math.min(moveHistory[hi].tileLow, moveHistory[hi].tileHigh);
+        var tHi = Math.max(moveHistory[hi].tileLow, moveHistory[hi].tileHigh);
+        gP1Tile = TILE_ID_TO_INDEX[tLo + '-' + tHi];
       } else {
-        p2Who = (entry.player === 'ai') ? 1 : 0;
-        p2L = entry.boardLeft;
-        p2R = entry.boardRight;
+        gP2Who = (moveHistory[hi].player === 'ai') ? 1 : 0;
+        gP2L = moveHistory[hi].boardLeft;
+        gP2R = moveHistory[hi].boardRight;
       }
       placementCount++;
     }
   }
 
-  // Compute initial Zobrist hash for root position (AI to move)
-  var rootHash = computeHash(aiTiles, humanTiles, left, right, true, 0);
+  var totalTiles = popcount(gAiHand) + popcount(gHumanHand);
+  gHash = computeRootHash(gAiHand, gHumanHand, gLeft, gRight, true, 0);
 
-  // Build root moves
-  var rootMoves = getMoves(aiTiles, left, right);
-  var numMoves = rootMoves.length / 2;
+  ttClear();
+  clearMoveOrderingData();
 
   var bestMove = legalMoves[0];
-  var TIME_BUDGET = 2000; // milliseconds
-  var startTime = Date.now();
-  var prevScore = 0; // for aspiration windows
+  var prevScore = 0;
+  timeStart = Date.now();
 
-  // Iterative deepening loop: depth 1, 2, 3, ... up to ceiling
-  for (var iterDepth = 1; iterDepth <= depthCeiling; iterDepth++) {
+  // Iterative deepening
+  for (var iterDepth = 1; iterDepth <= 50; iterDepth++) {
     nodeCount = 0;
 
-    var orderedMoves = rootMoves;
+    var numMoves = generateMoves(gAiHand, gLeft, gRight, 0);
+
     if (numMoves > 2) {
-      orderedMoves = orderMoves(rootMoves, aiTiles, humanTiles, left, right, true, iterDepth);
+      orderMovesAtPly(0, numMoves, true, iterDepth);
     }
 
-    // Check TT for PV move from previous iteration — move it to front (uses global tile index)
-    var pvHit = ttProbe(rootHash, 0, -100000, 100000);
+    // TT PV move to front
+    var pvHit = ttProbe(gHash, 0, -100000, 100000);
     if (pvHit && pvHit.bestIdx >= 0) {
       for (var mi = 1; mi < numMoves; mi++) {
-        var pvGIdx = TILE_ID_TO_INDEX[aiTiles[orderedMoves[mi * 2]].id];
-        if (pvGIdx === pvHit.bestIdx && orderedMoves[mi * 2 + 1] === pvHit.bestEnd) {
-          var tmpI = orderedMoves[0], tmpE = orderedMoves[1];
-          orderedMoves[0] = orderedMoves[mi * 2];
-          orderedMoves[1] = orderedMoves[mi * 2 + 1];
-          orderedMoves[mi * 2] = tmpI;
-          orderedMoves[mi * 2 + 1] = tmpE;
+        if (MOVE_TILE_BUF[mi] === pvHit.bestIdx &&
+            MOVE_END_BUF[mi] === pvHit.bestEnd) {
+          var tmpT = MOVE_TILE_BUF[0], tmpE = MOVE_END_BUF[0];
+          MOVE_TILE_BUF[0] = MOVE_TILE_BUF[mi];
+          MOVE_END_BUF[0] = MOVE_END_BUF[mi];
+          MOVE_TILE_BUF[mi] = tmpT;
+          MOVE_END_BUF[mi] = tmpE;
           break;
         }
       }
     }
 
-    // Aspiration window: use narrow window around previous score (skip for depth 1)
+    // Aspiration window
     var ASP_WINDOW = 30;
-    var alpha, beta;
+    var alphaW, betaW;
     if (iterDepth <= 1) {
-      alpha = -100000;
-      beta = 100000;
+      alphaW = -100000;
+      betaW = 100000;
     } else {
-      alpha = prevScore - ASP_WINDOW;
-      beta = prevScore + ASP_WINDOW;
+      alphaW = prevScore - ASP_WINDOW;
+      betaW = prevScore + ASP_WINDOW;
     }
 
     var iterBestScore = -100000;
-    var iterBestMove = null;
+    var iterBestTileIdx = -1;
+    var iterBestEnd = -1;
     var iterComplete = true;
 
-    // Aspiration search with re-search on fail
     for (var aspRetry = 0; aspRetry < 3; aspRetry++) {
       iterBestScore = -100000;
-      iterBestMove = null;
+      iterBestTileIdx = -1;
+      iterBestEnd = -1;
       iterComplete = true;
-      var curAlpha = alpha;
+      var curAlpha = alphaW;
+
+      var rootAiHand = gAiHand;
+      var rootHash = gHash;
 
       for (var i = 0; i < numMoves; i++) {
-        var tIdx = orderedMoves[i * 2];
-        var end = orderedMoves[i * 2 + 1];
-        var tile = aiTiles[tIdx];
-        var endStr = (end === 0 || end === -1) ? 'left' : 'right';
-        var newEnds = simPlace(left, right, tile, endStr);
-        var newAI = removeTile(aiTiles, tIdx);
+        var tIdx = MOVE_TILE_BUF[i];
+        var end = MOVE_END_BUF[i];
+
+        var bit = 1 << tIdx;
+        gAiHand = rootAiHand ^ bit;
+
+        var newL, newR;
+        if (gLeft === 7) {
+          newL = TILE_LOW[tIdx];
+          newR = TILE_HIGH[tIdx];
+        } else if (end === 0) {
+          newL = NEW_END_LEFT[tIdx * 8 + gLeft];
+          newR = gRight;
+        } else {
+          newL = gLeft;
+          newR = NEW_END_RIGHT[tIdx * 8 + gRight];
+        }
+
+        var savedRootLeft = gLeft, savedRootRight = gRight;
+        gLeft = newL; gRight = newR;
+
+        gHash = rootHash;
+        gHash ^= TILE_HASH[tIdx][0];
+        gHash ^= LEFT_HASH[savedRootLeft];
+        gHash ^= LEFT_HASH[newL];
+        gHash ^= RIGHT_HASH[savedRootRight];
+        gHash ^= RIGHT_HASH[newR];
+        gHash ^= SIDE_HASH;
+
+        gConsPass = 0;
+
+        var savedRP1Who = gP1Who, savedRP1L = gP1L, savedRP1R = gP1R, savedRP1Tile = gP1Tile;
+        var savedRP2Who = gP2Who, savedRP2L = gP2L, savedRP2R = gP2R;
+        gP2Who = gP1Who; gP2L = gP1L; gP2R = gP1R;
+        gP1Who = 1; gP1L = newL; gP1R = newR; gP1Tile = tIdx;
+
+        gPly = 1;
 
         var score;
 
-        // Terminal: AI domino
-        if (newAI.length === 0) {
-          score = scoreDomino(true, humanTiles, newEnds[0], newEnds[1]);
+        if (gAiHand === 0) {
+          score = scoreDominoBB(true, gHumanHand, newL, newR);
+        } else if (countMovesBB(gHumanHand, newL, newR) === 0 &&
+                   countMovesBB(gAiHand, newL, newR) === 0) {
+          score = scoreBlockBB();
+        } else {
+          score = minimaxBB(false, iterDepth - 1, curAlpha, betaW, 0);
         }
-        // Terminal: immediate lock
-        else if (countMoves(humanTiles, newEnds[0], newEnds[1]) === 0 &&
-                 countMoves(newAI, newEnds[0], newEnds[1]) === 0) {
-          score = scoreBlockPuppeteer(newAI, humanTiles, newEnds[0], newEnds[1],
-                                      1, newEnds[0], newEnds[1], tile,
-                                      p1Who, p1L, p1R);
-        }
-        // Recurse
-        else {
-          var tileIdx = TILE_ID_TO_INDEX[tile.id];
-          var childHash = rootHash;
-          childHash ^= TILE_HASH[tileIdx][0];
-          childHash ^= LEFT_HASH[left === null ? 7 : left];
-          childHash ^= LEFT_HASH[newEnds[0]];
-          childHash ^= RIGHT_HASH[right === null ? 7 : right];
-          childHash ^= RIGHT_HASH[newEnds[1]];
-          childHash ^= SIDE_HASH;
 
-          score = minimax(newAI, humanTiles, newEnds[0], newEnds[1], false, iterDepth - 1, curAlpha, beta,
-                          0, 1, newEnds[0], newEnds[1], tile, p1Who, p1L, p1R, childHash, 0);
-        }
+        gAiHand = rootAiHand;
+        gLeft = savedRootLeft; gRight = savedRootRight;
+        gHash = rootHash;
+        gP1Who = savedRP1Who; gP1L = savedRP1L; gP1R = savedRP1R; gP1Tile = savedRP1Tile;
+        gP2Who = savedRP2Who; gP2L = savedRP2L; gP2R = savedRP2R;
+        gPly = 0;
+        gConsPass = 0;
 
         if (score > iterBestScore) {
           iterBestScore = score;
-          iterBestMove = findLegalMove(legalMoves, tile, endStr);
+          iterBestTileIdx = tIdx;
+          iterBestEnd = end;
         }
         if (score > curAlpha) curAlpha = score;
 
@@ -856,50 +1004,42 @@ function chooseMoveHard(aiTiles, humanTiles, left, right, moveHistory, legalMove
         }
       }
 
-      // Check aspiration window failures
-      if (iterComplete && iterBestScore <= alpha) {
-        alpha = -100000;
+      if (iterComplete && iterBestScore <= alphaW) {
+        alphaW = -100000;
         continue;
       }
-      if (iterComplete && iterBestScore >= beta) {
-        beta = 100000;
+      if (iterComplete && iterBestScore >= betaW) {
+        betaW = 100000;
         continue;
       }
       break;
     }
 
-    // Update best move
-    if (iterComplete && iterBestMove) {
-      bestMove = iterBestMove;
-      prevScore = iterBestScore;
-    } else if (iterBestMove) {
-      if (iterBestMove === bestMove || iterBestScore > 500) {
-        bestMove = iterBestMove;
-      }
-    }
+    // Map result to legalMoves
+    if (iterBestTileIdx >= 0) {
+      var endStr = (iterBestEnd === 0) ? 'left' : 'right';
+      var tileId = TILE_LOW[iterBestTileIdx] + '-' + TILE_HIGH[iterBestTileIdx];
+      var mapped = findLegalMove(legalMoves, tileId, endStr);
 
-    // Store root position in TT for PV reuse (global tile index)
-    if (iterComplete) {
-      for (var si = 0; si < numMoves; si++) {
-        var sTile = aiTiles[orderedMoves[si * 2]];
-        var sEnd = orderedMoves[si * 2 + 1];
-        var sEndStr = (sEnd === 0 || sEnd === -1) ? 'left' : 'right';
-        var sLM = findLegalMove(legalMoves, sTile, sEndStr);
-        if (sLM === bestMove) {
-          var sGIdx = TILE_ID_TO_INDEX[sTile.id];
-          ttStore(rootHash, iterDepth, TT_EXACT, iterBestScore, sGIdx, sEnd);
-          break;
+      if (iterComplete && mapped) {
+        bestMove = mapped;
+        prevScore = iterBestScore;
+      } else if (mapped) {
+        if (mapped === bestMove || iterBestScore > 500) {
+          bestMove = mapped;
         }
       }
     }
 
-    // Early termination: exact solve
+    if (iterComplete && iterBestTileIdx >= 0) {
+      ttStore(gHash, iterDepth, TT_EXACT, iterBestScore, iterBestTileIdx, iterBestEnd);
+    }
+
     if (iterComplete && nodeCount < NODE_LIMIT && iterDepth >= totalTiles) {
       break;
     }
 
-    // Time check: if we've used > 50% of budget, don't start next iteration
-    var elapsed = Date.now() - startTime;
+    var elapsed = Date.now() - timeStart;
     if (elapsed > TIME_BUDGET * 0.5) {
       break;
     }
@@ -908,21 +1048,28 @@ function chooseMoveHard(aiTiles, humanTiles, left, right, moveHistory, legalMove
   return bestMove;
 }
 
-// --- Worker message handler ---
+function findLegalMove(legalMoves, tileId, endStr) {
+  for (var i = 0; i < legalMoves.length; i++) {
+    var lm = legalMoves[i];
+    var lmId = Math.min(lm.tileLow, lm.tileHigh) + '-' + Math.max(lm.tileLow, lm.tileHigh);
+    if (lmId === tileId && lm.end === endStr) {
+      return lm;
+    }
+  }
+  for (var i = 0; i < legalMoves.length; i++) {
+    var lm = legalMoves[i];
+    var lmId = Math.min(lm.tileLow, lm.tileHigh) + '-' + Math.max(lm.tileLow, lm.tileHigh);
+    if (lmId === tileId) return lm;
+  }
+  return legalMoves[0];
+}
+
+// =====================================================================
+// WORKER MESSAGE HANDLER
+// =====================================================================
 
 onmessage = function (e) {
   var data = e.data;
-
-  // Reconstruct Tile objects from plain {low, high} descriptors
-  var aiTiles = [];
-  for (var i = 0; i < data.aiTiles.length; i++) {
-    aiTiles.push(getTile(data.aiTiles[i].low, data.aiTiles[i].high));
-  }
-
-  var humanTiles = [];
-  for (var i = 0; i < data.humanTiles.length; i++) {
-    humanTiles.push(getTile(data.humanTiles[i].low, data.humanTiles[i].high));
-  }
 
   var left = data.boardEmpty ? null : data.left;
   var right = data.boardEmpty ? null : data.right;
@@ -930,7 +1077,7 @@ onmessage = function (e) {
   var moveHistory = data.moveHistory || [];
   var legalMoves = data.legalMoves || [];
 
-  // Trivial cases: 0 or 1 legal moves
+  // Trivial cases
   if (legalMoves.length === 0) {
     postMessage(null);
     return;
@@ -942,9 +1089,9 @@ onmessage = function (e) {
   }
 
   // Run the hard AI search
-  var best = chooseMoveHard(aiTiles, humanTiles, left, right, moveHistory, legalMoves);
+  var best = chooseMoveHard(data.aiTiles, data.humanTiles, left, right, moveHistory, legalMoves);
 
   // Post result back
-  var resultTile = getTile(best.tileLow, best.tileHigh);
-  postMessage({ tileId: resultTile.id, end: best.end });
+  var bestId = Math.min(best.tileLow, best.tileHigh) + '-' + Math.max(best.tileLow, best.tileHigh);
+  postMessage({ tileId: bestId, end: best.end });
 };
