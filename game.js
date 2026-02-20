@@ -266,6 +266,36 @@ window.Domino = window.Domino || {};
       return this.hand;
     }
 
+    dealHandFromTiles(leader, humanTileData, aiTileData) {
+      this.handNumber++;
+      var humanHand = new Hand();
+      var aiHand = new Hand();
+
+      for (var i = 0; i < humanTileData.length; i++) {
+        humanHand.add(new Tile(humanTileData[i].low, humanTileData[i].high));
+      }
+      for (var i = 0; i < aiTileData.length; i++) {
+        aiHand.add(new Tile(aiTileData[i].low, aiTileData[i].high));
+      }
+
+      humanHand.tiles.sort(function (a, b) {
+        return a.low - b.low || a.high - b.high;
+      });
+
+      this.hand = {
+        humanHand: humanHand,
+        aiHand: aiHand,
+        board: new Board(),
+        currentPlayer: leader,
+        consecutivePasses: 0,
+        lastPlacer: null,
+        moveHistory: [],
+        opponentPassedValues: { human: [], ai: [] }
+      };
+
+      return this.hand;
+    }
+
     getHand(player) {
       return player === 'human' ? this.hand.humanHand : this.hand.aiHand;
     }

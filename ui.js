@@ -24,7 +24,7 @@
   var aiWorker = null;
   var selectedTile = null;
   var selectedMoves = []; // legal moves for selected tile
-  var difficulty = 'easy';
+  var difficulty = 'hard';
   var selectedEngine = 'new'; // 'old' or 'new'
   var openTiles = true;       // show AI tiles face-up
   var isProcessing = false;
@@ -37,6 +37,193 @@
   var handOver = false;          // true once hand/match result is shown
   var handResult = null;         // cached result for re-showing overlay
   var lastAIAnalysis = null;     // { bestScore, depth, nodes, analysis }
+
+  // --- Deal Save/Replay System ---
+  var SAVE_KEY = 'dominos-deals';
+  var matchDeals = [];         // accumulates {leader, humanTiles, aiTiles} per hand during match
+  var replayDeals = null;      // saved deal being replayed (or null)
+  var replayHandIndex = 0;     // which hand we're on during replay
+
+  function loadAllDeals() {
+    try {
+      var json = localStorage.getItem(SAVE_KEY);
+      if (!json) return [null, null, null];
+      var arr = JSON.parse(json);
+      if (!Array.isArray(arr)) return [null, null, null];
+      while (arr.length < 3) arr.push(null);
+      return arr.slice(0, 3);
+    } catch (e) {
+      return [null, null, null];
+    }
+  }
+
+  function saveAllDeals(slots) {
+    try {
+      localStorage.setItem(SAVE_KEY, JSON.stringify(slots));
+    } catch (e) {
+      // Safari private browsing or quota exceeded — fail silently
+    }
+  }
+
+  function saveDealToSlot(index) {
+    var slots = loadAllDeals();
+    slots[index] = {
+      version: 1,
+      savedAt: Date.now(),
+      difficulty: difficulty,
+      selectedEngine: selectedEngine,
+      openTiles: openTiles,
+      hands: matchDeals.slice(),
+      finalScore: { human: engine.matchScore.human, ai: engine.matchScore.ai },
+      handCount: engine.handNumber
+    };
+    saveAllDeals(slots);
+  }
+
+  function deleteSlot(index) {
+    var slots = loadAllDeals();
+    slots[index] = null;
+    saveAllDeals(slots);
+  }
+
+  function renderSavedDeals() {
+    if (!els.savedDeals || !els.savedDealsList) return;
+    var slots = loadAllDeals();
+    var hasAny = false;
+    els.savedDealsList.innerHTML = '';
+
+    for (var i = 0; i < 3; i++) {
+      if (!slots[i]) continue;
+      hasAny = true;
+      var s = slots[i];
+      var date = new Date(s.savedAt);
+      var dateStr = date.toLocaleDateString();
+
+      var row = document.createElement('div');
+      row.className = 'saved-deal';
+
+      var info = document.createElement('div');
+      info.className = 'saved-deal-info';
+      info.innerHTML = '<div class="saved-deal-score">You ' + s.finalScore.human +
+        ' — AI ' + s.finalScore.ai + '</div>' +
+        '<div class="saved-deal-meta">' + s.handCount + ' hands · ' +
+        s.difficulty + ' · ' + dateStr + '</div>';
+
+      var actions = document.createElement('div');
+      actions.className = 'saved-deal-actions';
+
+      var replayBtn = document.createElement('button');
+      replayBtn.className = 'btn btn-option';
+      replayBtn.textContent = 'Replay';
+      (function (idx) {
+        replayBtn.addEventListener('click', function () { onReplayDeal(idx); });
+      })(i);
+
+      var delBtn = document.createElement('button');
+      delBtn.className = 'btn btn-option btn-del';
+      delBtn.textContent = 'X';
+      (function (idx) {
+        delBtn.addEventListener('click', function () { onDeleteDeal(idx); });
+      })(i);
+
+      actions.appendChild(replayBtn);
+      actions.appendChild(delBtn);
+      row.appendChild(info);
+      row.appendChild(actions);
+      els.savedDealsList.appendChild(row);
+    }
+
+    els.savedDeals.style.display = hasAny ? 'block' : 'none';
+  }
+
+  function renderSaveSlots() {
+    if (!els.saveSlots) return;
+    var slots = loadAllDeals();
+    els.saveSlots.innerHTML = '';
+
+    for (var i = 0; i < 3; i++) {
+      var row = document.createElement('div');
+      row.className = 'save-slot' + (slots[i] ? '' : ' save-slot--empty');
+
+      var info = document.createElement('div');
+      info.className = 'saved-deal-info';
+      if (slots[i]) {
+        var s = slots[i];
+        var date = new Date(s.savedAt);
+        info.innerHTML = '<div class="saved-deal-score">You ' + s.finalScore.human +
+          ' — AI ' + s.finalScore.ai + '</div>' +
+          '<div class="saved-deal-meta">' + s.handCount + ' hands · ' + date.toLocaleDateString() + '</div>';
+      } else {
+        info.innerHTML = '<div class="saved-deal-score">Empty Slot</div>';
+      }
+
+      var btn = document.createElement('button');
+      btn.className = 'btn btn-option';
+      btn.textContent = slots[i] ? 'Overwrite' : 'Save Here';
+      (function (idx) {
+        btn.addEventListener('click', function () { onSaveToSlot(idx); });
+      })(i);
+
+      row.appendChild(info);
+      row.appendChild(btn);
+      els.saveSlots.appendChild(row);
+    }
+  }
+
+  function showSavePrompt() {
+    renderSaveSlots();
+    els.saveOverlay.style.display = 'flex';
+  }
+
+  function onSaveToSlot(index) {
+    saveDealToSlot(index);
+    els.saveOverlay.style.display = 'none';
+    els.startOverlay.style.display = 'flex';
+    renderSavedDeals();
+  }
+
+  function onSkipSave() {
+    els.saveOverlay.style.display = 'none';
+    els.startOverlay.style.display = 'flex';
+    renderSavedDeals();
+  }
+
+  function onReplayDeal(index) {
+    var slots = loadAllDeals();
+    var deal = slots[index];
+    if (!deal) return;
+
+    // Set settings from saved deal
+    difficulty = deal.difficulty;
+    selectedEngine = deal.selectedEngine;
+    openTiles = deal.openTiles;
+
+    replayDeals = deal;
+    replayHandIndex = 0;
+    matchDeals = [];
+
+    engine = new D.GameEngine();
+    engine.newMatch(difficulty);
+    if (selectedEngine === 'old') {
+      ai = new D.OldAIPlayer(difficulty);
+    } else {
+      ai = new D.AIPlayer(difficulty);
+    }
+
+    els.startOverlay.style.display = 'none';
+
+    // Use the first hand's leader from the saved deal
+    if (replayDeals.hands.length > 0) {
+      startHand(replayDeals.hands[0].leader);
+    } else {
+      showLeaderChoice();
+    }
+  }
+
+  function onDeleteDeal(index) {
+    deleteSlot(index);
+    renderSavedDeals();
+  }
 
   function init() {
     els.humanScore = document.getElementById('human-score');
@@ -70,8 +257,17 @@
     els.matchTitle = document.getElementById('match-title');
     els.matchBody = document.getElementById('match-body');
 
+    els.savedDeals = document.getElementById('saved-deals');
+    els.savedDealsList = document.getElementById('saved-deals-list');
+    els.saveOverlay = document.getElementById('save-overlay');
+    els.saveSlots = document.getElementById('save-slots');
+    els.saveSkipBtn = document.getElementById('save-skip-btn');
+
     setupEventListeners();
     initWorker();
+
+    // Populate saved deals list on start screen
+    renderSavedDeals();
   }
 
   function initWorker() {
@@ -143,10 +339,16 @@
 
     // Play again (next-hand-btn onclick is set dynamically in showHandResult)
     document.getElementById('play-again-btn').addEventListener('click', onPlayAgain);
+
+    // Save prompt
+    document.getElementById('save-skip-btn').addEventListener('click', onSkipSave);
   }
 
   // ---- Start Screen ----
   function onStartMatch() {
+    matchDeals = [];
+    replayDeals = null;
+    replayHandIndex = 0;
     engine = new D.GameEngine();
     engine.newMatch(difficulty);
     if (selectedEngine === 'old') {
@@ -160,7 +362,10 @@
   }
 
   function showLeaderChoice() {
-    if (engine.previousHandWinner) {
+    if (replayDeals && replayHandIndex < replayDeals.hands.length) {
+      // Replay mode — use saved leader, skip choice overlay
+      startHand(replayDeals.hands[replayHandIndex].leader);
+    } else if (engine.previousHandWinner) {
       // Subsequent hand — previous winner leads
       startHand(engine.previousHandWinner);
     } else {
@@ -175,7 +380,22 @@
 
   // ---- Hand Flow ----
   function startHand(leader) {
-    engine.dealHand(leader);
+    // Use saved deal if replaying, otherwise shuffle normally
+    if (replayDeals && replayHandIndex < replayDeals.hands.length) {
+      var deal = replayDeals.hands[replayHandIndex];
+      engine.dealHandFromTiles(deal.leader, deal.humanTiles, deal.aiTiles);
+      leader = deal.leader;
+      replayHandIndex++;
+    } else {
+      engine.dealHand(leader);
+    }
+
+    // Record this deal for potential saving later
+    matchDeals.push({
+      leader: leader,
+      humanTiles: engine.hand.humanHand.tiles.map(function (t) { return { low: t.low, high: t.high }; }),
+      aiTiles: engine.hand.aiHand.tiles.map(function (t) { return { low: t.low, high: t.high }; })
+    });
 
     // Save initial hand state for history navigation
     initialHumanTiles = engine.hand.humanHand.tiles.slice();
@@ -652,7 +872,7 @@
 
   function onPlayAgain() {
     els.matchOverlay.style.display = 'none';
-    els.startOverlay.style.display = 'flex';
+    showSavePrompt();
   }
 
   function onReviewHand() {
@@ -868,10 +1088,16 @@
       board.place(move.tile, move.end);
 
       if (move.player === 'human') {
-        var idx = humanTiles.indexOf(move.tile);
+        var idx = -1;
+        for (var k = 0; k < humanTiles.length; k++) {
+          if (humanTiles[k].id === move.tile.id) { idx = k; break; }
+        }
         if (idx !== -1) humanTiles.splice(idx, 1);
       } else {
-        var idx = aiTiles.indexOf(move.tile);
+        var idx = -1;
+        for (var k = 0; k < aiTiles.length; k++) {
+          if (aiTiles[k].id === move.tile.id) { idx = k; break; }
+        }
         if (idx !== -1) aiTiles.splice(idx, 1);
       }
     }

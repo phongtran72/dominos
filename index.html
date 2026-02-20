@@ -91,8 +91,8 @@
       <div class="form-group">
         <label>Difficulty</label>
         <div class="radio-group">
-          <button class="btn btn-option active" data-difficulty="easy">Easy</button>
-          <button class="btn btn-option" data-difficulty="hard">Hard</button>
+          <button class="btn btn-option" data-difficulty="easy">Easy</button>
+          <button class="btn btn-option active" data-difficulty="hard">Hard</button>
         </div>
       </div>
       <div class="form-group">
@@ -110,6 +110,12 @@
         </div>
       </div>
       <button id="start-btn" class="btn btn-primary">Start Match</button>
+      <div id="saved-deals" style="display:none;">
+        <div class="form-group" style="margin-top:24px;">
+          <label>Saved Games</label>
+          <div id="saved-deals-list"></div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -146,6 +152,16 @@
         <button id="review-match-btn" class="btn btn-secondary">Review Moves</button>
         <button id="play-again-btn" class="btn btn-primary">Play Again</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Save Prompt Overlay -->
+  <div id="save-overlay" class="overlay" style="display:none;">
+    <div class="modal">
+      <h2>Save This Game?</h2>
+      <p class="subtitle">Save the tile deals to replay this match</p>
+      <div id="save-slots"></div>
+      <button id="save-skip-btn" class="btn btn-secondary" style="margin-top:16px;">No Thanks</button>
     </div>
   </div>
 
