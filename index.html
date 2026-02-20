@@ -43,7 +43,9 @@
 
     <!-- Status Bar -->
     <div id="status-bar">
+      <button id="nav-backward" class="btn btn-nav" style="display:none;" disabled>&laquo;</button>
       <span id="status-message">Welcome</span>
+      <button id="nav-forward" class="btn btn-nav" style="display:none;" disabled>&raquo;</button>
       <button id="pass-btn" class="btn btn-pass" style="display:none;">Pass</button>
     </div>
 
@@ -80,7 +82,7 @@
       <div class="form-group">
         <label>Engine</label>
         <div class="radio-group">
-          <button class="btn btn-option" data-engine="old">Old Minimax</button>
+          <button class="btn btn-option" data-engine="old">Minimax</button>
           <button class="btn btn-option active" data-engine="new">Bitboard</button>
         </div>
       </div>

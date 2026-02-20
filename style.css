@@ -2,7 +2,9 @@
    style.css — Domino Game Styles
    ============================================================ */
 
-*, *::before, *::after {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
   margin: 0;
   padding: 0;
@@ -62,7 +64,7 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 6px 16px;
-  background: rgba(0,0,0,0.35);
+  background: rgba(0, 0, 0, 0.35);
   border-radius: 10px;
   flex-shrink: 0;
 }
@@ -98,7 +100,8 @@ body {
 }
 
 /* --- Hand Areas --- */
-#ai-hand-area, #human-hand-area {
+#ai-hand-area,
+#human-hand-area {
   flex-shrink: 0;
   padding: 4px 0;
   overflow: hidden;
@@ -192,9 +195,10 @@ body {
 .tile--board {
   cursor: default;
 }
+
 .tile--board:hover {
   transform: none;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
 }
 
 /* New tile placement animation */
@@ -243,7 +247,7 @@ body {
   transition: transform 0.15s, box-shadow 0.15s;
   position: relative;
   flex-shrink: 0;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
   border: 1px solid #999;
 }
 
@@ -284,6 +288,7 @@ body {
   border-radius: 5px 0 0 5px;
   border-right: 1px solid #bbb;
 }
+
 .tile--horizontal .tile-half:last-child {
   border-radius: 0 5px 5px 0;
 }
@@ -292,6 +297,7 @@ body {
   border-radius: 5px 5px 0 0;
   border-bottom: 1px solid #bbb;
 }
+
 .tile--vertical .tile-half:last-child {
   border-radius: 0 0 5px 5px;
 }
@@ -315,7 +321,7 @@ body {
   background: linear-gradient(135deg, #2a4a7f 0%, #1a3060 100%);
   border: 1px solid #4a6a9f;
   border-radius: 5px;
-  box-shadow: 0 2px 3px rgba(0,0,0,0.3);
+  box-shadow: 0 2px 3px rgba(0, 0, 0, 0.3);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -326,7 +332,7 @@ body {
   content: '';
   width: 14px;
   height: 24px;
-  border: 1px solid rgba(255,255,255,0.15);
+  border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 3px;
 }
 
@@ -353,7 +359,7 @@ body {
 @media (hover: hover) {
   .tile:not(.tile--disabled):not(.tile--back):not(.tile--board):hover {
     transform: translateY(-4px);
-    box-shadow: 0 4px 8px rgba(0,0,0,0.4);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.4);
   }
 
   .tile--selected:hover {
@@ -371,8 +377,15 @@ body {
 }
 
 @keyframes tile-drop {
-  from { opacity: 0; transform: scale(0.5); }
-  to   { opacity: 1; transform: scale(1); }
+  from {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 /* Flying tile animation (AI move with open tiles) */
@@ -381,7 +394,7 @@ body {
   z-index: 1000;
   transition: left 0.5s ease-in-out, top 0.5s ease-in-out, transform 0.5s ease-in-out;
   pointer-events: none;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
 }
 
 .tile--ghost {
@@ -428,13 +441,13 @@ body {
 }
 
 .btn-secondary {
-  background: rgba(255,255,255,0.15);
+  background: rgba(255, 255, 255, 0.15);
   color: #fff;
-  border: 1px solid rgba(255,255,255,0.3);
+  border: 1px solid rgba(255, 255, 255, 0.3);
 }
 
 .btn-secondary:hover {
-  background: rgba(255,255,255,0.25);
+  background: rgba(255, 255, 255, 0.25);
 }
 
 .btn-pass {
@@ -449,10 +462,40 @@ body {
   background: #d05050;
 }
 
+.btn-nav {
+  background: rgba(255, 255, 255, 0.12);
+  color: #d4f0d4;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  padding: 4px 10px;
+  font-size: 1rem;
+  font-weight: 700;
+  min-height: 32px;
+  min-width: 36px;
+  border-radius: 6px;
+  line-height: 1;
+}
+
+.btn-nav:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.25);
+  color: #f0d060;
+}
+
+.btn-nav:disabled {
+  opacity: 0.3;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* Reviewing status text */
+#status-message.reviewing {
+  color: #f0d060;
+  font-style: italic;
+}
+
 .btn-option {
-  background: rgba(255,255,255,0.1);
+  background: rgba(255, 255, 255, 0.1);
   color: #fff;
-  border: 1px solid rgba(255,255,255,0.25);
+  border: 1px solid rgba(255, 255, 255, 0.25);
   padding: 8px 20px;
 }
 
@@ -481,7 +524,7 @@ body {
 
 .modal {
   background: #1e3a25;
-  border: 1px solid rgba(255,255,255,0.15);
+  border: 1px solid rgba(255, 255, 255, 0.15);
   border-radius: 16px;
   padding: 32px 40px;
   text-align: center;
@@ -490,7 +533,7 @@ body {
   max-height: 90vh;
   max-height: 90dvh;
   overflow-y: auto;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
 }
 
 .modal h2 {
@@ -531,7 +574,8 @@ body {
 }
 
 /* Result styles */
-#result-body, #match-body {
+#result-body,
+#match-body {
   text-align: left;
   margin: 16px 0 24px 0;
   font-size: 0.9rem;
@@ -554,8 +598,15 @@ body {
 
 /* --- Animations --- */
 @keyframes pulse-glow {
-  0%, 100% { box-shadow: 0 0 5px rgba(76,255,76,0.3); }
-  50%      { box-shadow: 0 0 15px rgba(76,255,76,0.6); }
+
+  0%,
+  100% {
+    box-shadow: 0 0 5px rgba(76, 255, 76, 0.3);
+  }
+
+  50% {
+    box-shadow: 0 0 15px rgba(76, 255, 76, 0.6);
+  }
 }
 
 /* ===========================================================
@@ -602,7 +653,8 @@ body {
     font-size: 1rem;
   }
 
-  #ai-hand-area, #human-hand-area {
+  #ai-hand-area,
+  #human-hand-area {
     padding: 3px 0;
   }
 
@@ -668,12 +720,20 @@ body {
     font-size: 0.8rem;
   }
 
+  .btn-nav {
+    padding: 3px 7px;
+    font-size: 0.85rem;
+    min-height: 28px;
+    min-width: 30px;
+  }
+
   .btn-option {
     padding: 8px 16px;
     font-size: 0.85rem;
   }
 
-  #result-body, #match-body {
+  #result-body,
+  #match-body {
     font-size: 0.82rem;
     margin: 12px 0 16px 0;
   }
@@ -755,7 +815,8 @@ body {
     font-size: 0.85rem;
   }
 
-  #ai-hand-area, #human-hand-area {
+  #ai-hand-area,
+  #human-hand-area {
     padding: 1px 0;
   }
 
@@ -808,13 +869,21 @@ body {
     margin-bottom: 12px;
   }
 
+  .btn-nav {
+    padding: 2px 6px;
+    font-size: 0.8rem;
+    min-height: 26px;
+    min-width: 28px;
+  }
+
   .btn {
     padding: 6px 16px;
     font-size: 0.8rem;
     min-height: 36px;
   }
 
-  #result-body, #match-body {
+  #result-body,
+  #match-body {
     font-size: 0.78rem;
     margin: 8px 0 12px 0;
     line-height: 1.4;

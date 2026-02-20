@@ -29,6 +29,12 @@
   var openTiles = true;       // show AI tiles face-up
   var isProcessing = false;
 
+  // --- History Navigation State ---
+  var initialHumanTiles = null;  // Tile[] saved at deal time
+  var initialAITiles = null;
+  var viewIndex = -1;            // -1 = live, 0..N = viewing move N
+  var isReviewing = false;
+
   function init() {
     els.humanScore = document.getElementById('human-score');
     els.aiScore = document.getElementById('ai-score');
@@ -43,6 +49,9 @@
     els.boardLeftMarker = document.getElementById('board-left-marker');
     els.boardRightMarker = document.getElementById('board-right-marker');
     els.boardArea = document.getElementById('board-area');
+
+    els.navBackward = document.getElementById('nav-backward');
+    els.navForward = document.getElementById('nav-forward');
 
     els.startOverlay = document.getElementById('start-overlay');
     els.leaderOverlay = document.getElementById('leader-overlay');
@@ -116,8 +125,11 @@
     els.boardLeftMarker.addEventListener('click', function () { onEndClicked('left'); });
     els.boardRightMarker.addEventListener('click', function () { onEndClicked('right'); });
 
-    // Next hand / play again
-    document.getElementById('next-hand-btn').addEventListener('click', onNextHand);
+    // History navigation
+    els.navBackward.addEventListener('click', goBackward);
+    els.navForward.addEventListener('click', goForward);
+
+    // Play again (next-hand-btn onclick is set dynamically in showHandResult)
     document.getElementById('play-again-btn').addEventListener('click', onPlayAgain);
   }
 
@@ -152,6 +164,13 @@
   // ---- Hand Flow ----
   function startHand(leader) {
     engine.dealHand(leader);
+
+    // Save initial hand state for history navigation
+    initialHumanTiles = engine.hand.humanHand.tiles.slice();
+    initialAITiles = engine.hand.aiHand.tiles.slice();
+    viewIndex = -1;
+    isReviewing = false;
+
     selectedTile = null;
     selectedMoves = [];
     isProcessing = false;
@@ -161,6 +180,7 @@
     renderHumanHand();
     renderBoard();
     hideEndMarkers();
+    updateNavButtons();
 
     if (leader === 'human') {
       startHumanTurn();
@@ -188,10 +208,11 @@
     els.passBtn.style.display = 'none';
     setStatus('Your turn — select a tile to play.');
     renderHumanHand();
+    updateNavButtons();
   }
 
   function onTileClicked(tile) {
-    if (isProcessing) return;
+    if (isProcessing || isReviewing) return;
     var legalMoves = engine.getLegalMoves('human');
 
     // Find moves for this tile
@@ -230,7 +251,7 @@
   }
 
   function onEndClicked(end) {
-    if (!selectedTile || isProcessing) return;
+    if (!selectedTile || isProcessing || isReviewing) return;
 
     // Validate the move
     var move = null;
@@ -262,11 +283,12 @@
     // AI's turn
     setStatus('AI is thinking...');
     disableHumanHand();
+    updateNavButtons();
     setTimeout(function () { executeAITurn(); }, 500);
   }
 
   function onPassClicked() {
-    if (isProcessing) return;
+    if (isProcessing || isReviewing) return;
     isProcessing = true;
     els.passBtn.style.display = 'none';
 
@@ -485,6 +507,11 @@
   // ---- Hand/Match Result ----
   function showHandResult(result) {
     isProcessing = false;
+    isReviewing = false;
+    viewIndex = -1;
+    els.statusMessage.classList.remove('reviewing');
+    els.navBackward.style.display = 'none';
+    els.navForward.style.display = 'none';
 
     // Reveal AI's remaining tiles
     renderAIHandRevealed();
@@ -743,6 +770,195 @@
     els.boardRightMarker.style.display = 'none';
     els.boardLeftMarker.classList.remove('glow');
     els.boardRightMarker.classList.remove('glow');
+  }
+
+  // ============================================================
+  // History Navigation — backward / forward through moves
+  // ============================================================
+
+  /**
+   * Reconstruct game state at the given move index.
+   * moveIndex = -1 → before any moves (initial deal, empty board)
+   * moveIndex = 0 → after the first move
+   * moveIndex = N → after move N (0-indexed into moveHistory)
+   */
+  function reconstructStateAt(moveIndex) {
+    var board = new D.Board();
+    var humanTiles = initialHumanTiles.slice();
+    var aiTiles = initialAITiles.slice();
+
+    var history = engine.hand.moveHistory;
+    var end = Math.min(moveIndex, history.length - 1);
+
+    for (var i = 0; i <= end; i++) {
+      var move = history[i];
+      if (move.pass) continue;
+
+      board.place(move.tile, move.end);
+
+      if (move.player === 'human') {
+        var idx = humanTiles.indexOf(move.tile);
+        if (idx !== -1) humanTiles.splice(idx, 1);
+      } else {
+        var idx = aiTiles.indexOf(move.tile);
+        if (idx !== -1) aiTiles.splice(idx, 1);
+      }
+    }
+
+    return { board: board, humanTiles: humanTiles, aiTiles: aiTiles };
+  }
+
+  function goBackward() {
+    if (!engine || !engine.hand) return;
+    if (isProcessing) return;
+
+    var historyLen = engine.hand.moveHistory.length;
+    if (historyLen === 0) return;
+
+    if (viewIndex === -1) {
+      // Currently live — go to one before the last move
+      viewIndex = historyLen - 2;
+    } else {
+      viewIndex--;
+    }
+
+    if (viewIndex < -1) viewIndex = -1;
+
+    enterReviewMode();
+  }
+
+  function goForward() {
+    if (!engine || !engine.hand) return;
+
+    var historyLen = engine.hand.moveHistory.length;
+
+    if (viewIndex === -1 && !isReviewing) return;
+
+    viewIndex++;
+
+    if (viewIndex >= historyLen - 1) {
+      exitReviewMode();
+      return;
+    }
+
+    enterReviewMode();
+  }
+
+  function enterReviewMode() {
+    isReviewing = true;
+
+    var state = reconstructStateAt(viewIndex);
+
+    renderBoardFromState(state.board);
+    renderHumanHandFromState(state.humanTiles);
+    renderAIHandFromState(state.aiTiles);
+
+    var historyLen = engine.hand.moveHistory.length;
+    if (viewIndex === -1) {
+      setStatus('Reviewing: Initial deal');
+    } else {
+      var move = engine.hand.moveHistory[viewIndex];
+      var who = move.player === 'human' ? 'You' : 'AI';
+      if (move.pass) {
+        setStatus('Move ' + (viewIndex + 1) + '/' + historyLen + ': ' + who + ' passed');
+      } else {
+        setStatus('Move ' + (viewIndex + 1) + '/' + historyLen + ': ' + who + ' played ' + move.tile.toString());
+      }
+    }
+
+    els.statusMessage.classList.add('reviewing');
+    els.passBtn.style.display = 'none';
+    hideEndMarkers();
+    updateNavButtons();
+  }
+
+  function exitReviewMode() {
+    viewIndex = -1;
+    isReviewing = false;
+    els.statusMessage.classList.remove('reviewing');
+
+    renderBoard();
+    renderHumanHand();
+    renderAIHand();
+    updateNavButtons();
+
+    if (engine.hand.currentPlayer === 'human') {
+      startHumanTurn();
+    } else {
+      setStatus('AI is thinking...');
+    }
+  }
+
+  function updateNavButtons() {
+    if (!els.navBackward || !els.navForward) return;
+
+    if (!engine || !engine.hand || engine.hand.moveHistory.length === 0) {
+      els.navBackward.style.display = 'none';
+      els.navForward.style.display = 'none';
+      return;
+    }
+
+    els.navBackward.style.display = 'inline-block';
+    els.navForward.style.display = 'inline-block';
+
+    // Backward: disabled at initial deal while reviewing, or during AI thinking
+    if ((isReviewing && viewIndex <= -1) || isProcessing) {
+      els.navBackward.disabled = true;
+    } else {
+      els.navBackward.disabled = false;
+    }
+
+    // Forward: disabled if at live state (not reviewing)
+    if (!isReviewing) {
+      els.navForward.disabled = true;
+    } else {
+      els.navForward.disabled = false;
+    }
+  }
+
+  // --- Read-only render functions for review mode ---
+
+  function renderBoardFromState(board) {
+    els.board.innerHTML = '';
+    var boardTiles = board.tiles;
+    if (boardTiles.length === 0) return;
+
+    for (var i = 0; i < boardTiles.length; i++) {
+      els.board.appendChild(createBoardTileElement(boardTiles[i]));
+    }
+
+    els.boardArea.scrollLeft = els.boardArea.scrollWidth;
+  }
+
+  function renderHumanHandFromState(tiles) {
+    els.humanHand.innerHTML = '';
+
+    for (var i = 0; i < tiles.length; i++) {
+      var el = createTileElement(tiles[i], false);
+      el.classList.add('tile--disabled');
+      els.humanHand.appendChild(el);
+    }
+
+    els.humanTileCount.textContent = '(' + tiles.length + ')';
+  }
+
+  function renderAIHandFromState(tiles) {
+    els.aiHand.innerHTML = '';
+
+    if (openTiles) {
+      for (var i = 0; i < tiles.length; i++) {
+        var el = createTileElement(tiles[i], false);
+        el.classList.add('tile--board');
+        el.classList.add('tile--ai-open');
+        els.aiHand.appendChild(el);
+      }
+    } else {
+      for (var i = 0; i < tiles.length; i++) {
+        els.aiHand.appendChild(createBackTile());
+      }
+    }
+
+    els.aiTileCount.textContent = '(' + tiles.length + ')';
   }
 
   function updateScoreboard() {
