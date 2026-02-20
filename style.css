@@ -450,6 +450,13 @@ body {
   background: rgba(255, 255, 255, 0.25);
 }
 
+.modal-buttons {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  margin-top: 16px;
+}
+
 .btn-pass {
   background: #c04040;
   color: #fff;

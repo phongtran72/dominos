@@ -34,6 +34,8 @@
   var initialAITiles = null;
   var viewIndex = -1;            // -1 = live, 0..N = viewing move N
   var isReviewing = false;
+  var handOver = false;          // true once hand/match result is shown
+  var handResult = null;         // cached result for re-showing overlay
 
   function init() {
     els.humanScore = document.getElementById('human-score');
@@ -129,6 +131,10 @@
     els.navBackward.addEventListener('click', goBackward);
     els.navForward.addEventListener('click', goForward);
 
+    // Review buttons
+    document.getElementById('review-hand-btn').addEventListener('click', onReviewHand);
+    document.getElementById('review-match-btn').addEventListener('click', onReviewMatch);
+
     // Play again (next-hand-btn onclick is set dynamically in showHandResult)
     document.getElementById('play-again-btn').addEventListener('click', onPlayAgain);
   }
@@ -170,6 +176,8 @@
     initialAITiles = engine.hand.aiHand.tiles.slice();
     viewIndex = -1;
     isReviewing = false;
+    handOver = false;
+    handResult = null;
 
     selectedTile = null;
     selectedMoves = [];
@@ -509,6 +517,8 @@
     isProcessing = false;
     isReviewing = false;
     viewIndex = -1;
+    handOver = true;
+    handResult = result;
     els.statusMessage.classList.remove('reviewing');
     els.navBackward.style.display = 'none';
     els.navForward.style.display = 'none';
@@ -598,6 +608,22 @@
   function onPlayAgain() {
     els.matchOverlay.style.display = 'none';
     els.startOverlay.style.display = 'flex';
+  }
+
+  function onReviewHand() {
+    els.resultOverlay.style.display = 'none';
+    startHandReview();
+  }
+
+  function onReviewMatch() {
+    els.matchOverlay.style.display = 'none';
+    startHandReview();
+  }
+
+  function startHandReview() {
+    var historyLen = engine.hand.moveHistory.length;
+    viewIndex = historyLen - 1;
+    enterReviewMode();
   }
 
   // ---- Rendering ----
@@ -837,7 +863,12 @@
     viewIndex++;
 
     if (viewIndex >= historyLen - 1) {
-      exitReviewMode();
+      if (handOver) {
+        // Return to final state and re-show the result overlay
+        exitReviewToHandOver();
+      } else {
+        exitReviewMode();
+      }
       return;
     }
 
@@ -886,6 +917,31 @@
       startHumanTurn();
     } else {
       setStatus('AI is thinking...');
+    }
+  }
+
+  function exitReviewToHandOver() {
+    viewIndex = -1;
+    isReviewing = false;
+    els.statusMessage.classList.remove('reviewing');
+
+    // Restore the final board + revealed hands
+    renderBoard();
+    renderHumanHand();
+    renderAIHandRevealed();
+
+    // Hide nav buttons behind overlay
+    els.navBackward.style.display = 'none';
+    els.navForward.style.display = 'none';
+
+    setStatus('Hand over');
+
+    // Re-show the appropriate overlay
+    var matchWinner = engine.checkMatchEnd();
+    if (matchWinner) {
+      els.matchOverlay.style.display = 'flex';
+    } else {
+      els.resultOverlay.style.display = 'flex';
     }
   }
 
