@@ -339,6 +339,7 @@
 
     // Play again (next-hand-btn onclick is set dynamically in showHandResult)
     document.getElementById('play-again-btn').addEventListener('click', onPlayAgain);
+    document.getElementById('new-game-btn').addEventListener('click', onNewGame);
 
     // Save prompt
     document.getElementById('save-skip-btn').addEventListener('click', onSkipSave);
@@ -873,6 +874,12 @@
   function onPlayAgain() {
     els.matchOverlay.style.display = 'none';
     showSavePrompt();
+  }
+
+  function onNewGame() {
+    els.matchOverlay.style.display = 'none';
+    els.startOverlay.style.display = 'flex';
+    renderSavedDeals();
   }
 
   function onReviewHand() {
