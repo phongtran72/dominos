@@ -167,6 +167,109 @@ body {
   text-align: center;
 }
 
+/* --- Eval Bar --- */
+#eval-bar-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 16px;
+  flex-shrink: 0;
+}
+
+#eval-bar {
+  flex: 1;
+  height: 10px;
+  background: #3a8a4a;
+  border-radius: 5px;
+  overflow: hidden;
+  position: relative;
+}
+
+#eval-fill {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  width: 50%;
+  background: #c06040;
+  border-radius: 5px;
+  transition: width 0.4s ease;
+}
+
+.eval-side {
+  font-size: 0.6rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.eval-side--you {
+  color: #5cba6c;
+}
+
+.eval-side--ai {
+  color: #d07050;
+}
+
+#eval-label {
+  font-size: 0.7rem;
+  color: rgba(255, 255, 255, 0.7);
+  white-space: nowrap;
+  min-width: 48px;
+  text-align: right;
+}
+
+/* --- Analysis Panel --- */
+#analysis-panel {
+  flex-shrink: 0;
+  padding: 2px 12px 4px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+#analysis-label {
+  font-size: 0.6rem;
+  color: rgba(255, 255, 255, 0.45);
+  margin-bottom: 3px;
+}
+
+#analysis-list {
+  display: flex;
+  gap: 6px;
+  flex-wrap: nowrap;
+}
+
+.analysis-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 0.65rem;
+  font-family: monospace;
+  white-space: nowrap;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.analysis-pill--best {
+  background: rgba(240, 208, 96, 0.25);
+  color: #f0d060;
+  font-weight: 700;
+}
+
+.analysis-pill .pill-score {
+  font-weight: 700;
+}
+
+.analysis-pill .pill-score--pos {
+  color: #6fd06f;
+}
+
+.analysis-pill .pill-score--neg {
+  color: #e07070;
+}
+
 /* --- Board Area (scrollable row) --- */
 #board-area {
   flex: 1;
@@ -744,6 +847,31 @@ body {
     font-size: 0.82rem;
     margin: 12px 0 16px 0;
   }
+
+  #eval-bar-container {
+    padding: 1px 8px;
+  }
+
+  #eval-bar {
+    height: 8px;
+  }
+
+  .eval-side {
+    font-size: 0.5rem;
+  }
+
+  #eval-label {
+    font-size: 0.6rem;
+  }
+
+  #analysis-label {
+    font-size: 0.55rem;
+  }
+
+  .analysis-pill {
+    font-size: 0.6rem;
+    padding: 1px 6px;
+  }
 }
 
 /* ===========================================================
@@ -894,6 +1022,36 @@ body {
     font-size: 0.78rem;
     margin: 8px 0 12px 0;
     line-height: 1.4;
+  }
+
+  #eval-bar-container {
+    padding: 0 8px;
+  }
+
+  #eval-bar {
+    height: 6px;
+  }
+
+  .eval-side {
+    font-size: 0.45rem;
+  }
+
+  #eval-label {
+    font-size: 0.55rem;
+    min-width: 40px;
+  }
+
+  #analysis-panel {
+    padding: 1px 8px 2px;
+  }
+
+  #analysis-label {
+    font-size: 0.5rem;
+  }
+
+  .analysis-pill {
+    font-size: 0.55rem;
+    padding: 1px 5px;
   }
 }
 

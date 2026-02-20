@@ -922,7 +922,9 @@
 
     chooseMove(legalMoves, engine) {
       if (legalMoves.length === 0) return null;
-      if (legalMoves.length === 1) return legalMoves[0];
+      if (legalMoves.length === 1) {
+        return { move: legalMoves[0], bestScore: 0, depth: 0, nodes: 0, analysis: [] };
+      }
 
       if (this.difficulty === 'hard') {
         return this.chooseMoveHard(legalMoves, engine);
@@ -931,7 +933,8 @@
     }
 
     chooseMoveEasy(legalMoves) {
-      return legalMoves[Math.floor(Math.random() * legalMoves.length)];
+      var move = legalMoves[Math.floor(Math.random() * legalMoves.length)];
+      return { move: move, bestScore: 0, depth: 0, nodes: 0, analysis: [] };
     }
 
     chooseMoveHard(legalMoves, engine) {
@@ -983,6 +986,10 @@
 
       var bestMove = legalMoves[0];
       var prevScore = 0;
+      var lastDepth = 0;
+      var lastNodes = 0;
+      var rootScores = {};
+      var committedScores = {};
       timeStart = Date.now();
 
       // Iterative deepening
@@ -1107,6 +1114,8 @@
             gPly = 0;
             gConsPass = 0;
 
+            rootScores[tIdx + '_' + end] = score;
+
             if (score > iterBestScore) {
               iterBestScore = score;
               iterBestTileIdx = tIdx;
@@ -1141,6 +1150,10 @@
           if (iterComplete && mapped) {
             bestMove = mapped;
             prevScore = iterBestScore;
+            lastDepth = iterDepth;
+            lastNodes = nodeCount;
+            // Commit scores from completed iteration
+            for (var key in rootScores) committedScores[key] = rootScores[key];
           } else if (mapped) {
             if (mapped === bestMove || iterBestScore > 500) {
               bestMove = mapped;
@@ -1165,7 +1178,21 @@
         }
       }
 
-      return bestMove;
+      // Build analysis array from committed scores
+      var analysis = [];
+      for (var key in committedScores) {
+        var parts = key.split('_');
+        var ti = parseInt(parts[0]);
+        var ei = parseInt(parts[1]);
+        analysis.push({
+          tileId: TILE_LOW[ti] + '-' + TILE_HIGH[ti],
+          end: ei === 0 ? 'left' : 'right',
+          score: committedScores[key]
+        });
+      }
+      analysis.sort(function (a, b) { return b.score - a.score; });
+
+      return { move: bestMove, bestScore: prevScore, depth: lastDepth, nodes: lastNodes, analysis: analysis };
     }
 
     // Map tile index + end string to legalMoves entry
@@ -1180,6 +1207,22 @@
         if (legalMoves[i].tile.id === tileId) return legalMoves[i];
       }
       return legalMoves[0];
+    }
+
+    evaluatePosition(engine) {
+      var hand = engine.hand;
+      var board = hand.board;
+      gAiHand = 0;
+      for (var i = 0; i < hand.aiHand.tiles.length; i++) {
+        gAiHand |= (1 << TILE_ID_TO_INDEX[hand.aiHand.tiles[i].id]);
+      }
+      gHumanHand = 0;
+      for (var i = 0; i < hand.humanHand.tiles.length; i++) {
+        gHumanHand |= (1 << TILE_ID_TO_INDEX[hand.humanHand.tiles[i].id]);
+      }
+      gLeft = board.isEmpty() ? 7 : board.leftEnd;
+      gRight = board.isEmpty() ? 7 : board.rightEnd;
+      return evaluateBB();
     }
   }
 

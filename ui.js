@@ -36,6 +36,7 @@
   var isReviewing = false;
   var handOver = false;          // true once hand/match result is shown
   var handResult = null;         // cached result for re-showing overlay
+  var lastAIAnalysis = null;     // { bestScore, depth, nodes, analysis }
 
   function init() {
     els.humanScore = document.getElementById('human-score');
@@ -54,6 +55,11 @@
 
     els.navBackward = document.getElementById('nav-backward');
     els.navForward = document.getElementById('nav-forward');
+
+    els.evalFill = document.getElementById('eval-fill');
+    els.evalLabel = document.getElementById('eval-label');
+    els.analysisPanel = document.getElementById('analysis-panel');
+    els.analysisList = document.getElementById('analysis-list');
 
     els.startOverlay = document.getElementById('start-overlay');
     els.leaderOverlay = document.getElementById('leader-overlay');
@@ -178,11 +184,14 @@
     isReviewing = false;
     handOver = false;
     handResult = null;
+    lastAIAnalysis = null;
 
     selectedTile = null;
     selectedMoves = [];
     isProcessing = false;
 
+    updateEvalBar(0);
+    clearAnalysis();
     updateScoreboard();
     renderAIHand();
     renderHumanHand();
@@ -283,6 +292,17 @@
     renderAIHand();
     updateScoreboard();
 
+    // Eval bar after human move (quick static eval, no search)
+    var humanEval = ai.evaluatePosition(engine);
+    updateEvalBar(humanEval);
+    clearAnalysis();
+
+    // Attach eval to moveHistory
+    var history = engine.hand.moveHistory;
+    if (history.length > 0) {
+      history[history.length - 1].evalScore = humanEval;
+    }
+
     if (result.handEnd) {
       showHandResult(result.handEnd);
       return;
@@ -331,6 +351,20 @@
     renderAIHand();
     renderHumanHand();
     updateScoreboard();
+
+    // Show eval bar and analysis
+    if (lastAIAnalysis) {
+      updateEvalBar(lastAIAnalysis.bestScore);
+      renderAnalysis(lastAIAnalysis.analysis, move.tile.id, move.end);
+
+      // Attach to moveHistory for review mode
+      var history = engine.hand.moveHistory;
+      if (history.length > 0) {
+        var lastEntry = history[history.length - 1];
+        lastEntry.analysis = lastAIAnalysis.analysis;
+        lastEntry.evalScore = lastAIAnalysis.bestScore;
+      }
+    }
 
     // Adaptive post-play delay: if minimax took a while, reduce the
     // pause so total feel stays consistent (~600ms visible after play)
@@ -473,6 +507,14 @@
         var elapsed = Date.now() - t0;
         var result = e.data;
 
+        // Store analysis data
+        lastAIAnalysis = {
+          bestScore: result.bestScore || 0,
+          depth: result.depth || 0,
+          nodes: result.nodes || 0,
+          analysis: result.analysis || []
+        };
+
         // Map result back to a legalMove
         var tileId = result.tileId;
         var end = result.end;
@@ -496,9 +538,10 @@
 
       aiWorker.onerror = function () {
         // Fallback to synchronous on worker error
-        var move = ai.chooseMove(legalMoves, engine);
+        var aiResult = ai.chooseMove(legalMoves, engine);
+        lastAIAnalysis = { bestScore: aiResult.bestScore, depth: aiResult.depth, nodes: aiResult.nodes, analysis: aiResult.analysis };
         var elapsed = Date.now() - t0;
-        applyAIMove(move, elapsed);
+        applyAIMove(aiResult.move, elapsed);
       };
 
       aiWorker.postMessage(msg);
@@ -507,9 +550,10 @@
 
     // Synchronous path: easy mode or no Worker support
     var t0 = Date.now();
-    var move = ai.chooseMove(legalMoves, engine);
+    var aiResult = ai.chooseMove(legalMoves, engine);
+    lastAIAnalysis = { bestScore: aiResult.bestScore, depth: aiResult.depth, nodes: aiResult.nodes, analysis: aiResult.analysis };
     var elapsed = Date.now() - t0;
-    applyAIMove(move, elapsed);
+    applyAIMove(aiResult.move, elapsed);
   }
 
   // ---- Hand/Match Result ----
@@ -522,6 +566,7 @@
     els.statusMessage.classList.remove('reviewing');
     els.navBackward.style.display = 'none';
     els.navForward.style.display = 'none';
+    clearAnalysis();
 
     // Reveal AI's remaining tiles
     renderAIHandRevealed();
@@ -901,6 +946,24 @@
     els.passBtn.style.display = 'none';
     hideEndMarkers();
     updateNavButtons();
+
+    // Show stored analysis and eval for this move
+    if (viewIndex >= 0) {
+      var entry = engine.hand.moveHistory[viewIndex];
+      if (entry.evalScore !== undefined) {
+        updateEvalBar(entry.evalScore);
+      }
+      if (entry.analysis && entry.analysis.length > 0) {
+        var chosenId = entry.tile ? entry.tile.id : null;
+        var chosenEnd = entry.end || null;
+        renderAnalysis(entry.analysis, chosenId, chosenEnd);
+      } else {
+        clearAnalysis();
+      }
+    } else {
+      updateEvalBar(0);
+      clearAnalysis();
+    }
   }
 
   function exitReviewMode() {
@@ -912,6 +975,19 @@
     renderHumanHand();
     renderAIHand();
     updateNavButtons();
+
+    // Restore live eval bar + analysis from last move
+    var history = engine.hand.moveHistory;
+    if (history.length > 0) {
+      var lastEntry = history[history.length - 1];
+      if (lastEntry.evalScore !== undefined) updateEvalBar(lastEntry.evalScore);
+      if (lastEntry.analysis && lastEntry.analysis.length > 0) {
+        var cid = lastEntry.tile ? lastEntry.tile.id : null;
+        renderAnalysis(lastEntry.analysis, cid, lastEntry.end);
+      } else {
+        clearAnalysis();
+      }
+    }
 
     if (engine.hand.currentPlayer === 'human') {
       startHumanTurn();
@@ -933,6 +1009,7 @@
     // Hide nav buttons behind overlay
     els.navBackward.style.display = 'none';
     els.navForward.style.display = 'none';
+    clearAnalysis();
 
     setStatus('Hand over');
 
@@ -1015,6 +1092,69 @@
     }
 
     els.aiTileCount.textContent = '(' + tiles.length + ')';
+  }
+
+  // ============================================================
+  // Eval Bar + Analysis Panel
+  // ============================================================
+
+  // Sigmoid-style mapping: raw AI score → 0..100 percentage (AI side)
+  function scoreToPercent(score) {
+    // score > 0 means AI advantage, < 0 means human advantage
+    // Use tanh to squash into 0..100 range, centered at 50
+    var k = 0.03; // sensitivity — higher = more responsive to small advantages
+    var t = Math.tanh(score * k);
+    return 50 + t * 50; // 0 = full human, 100 = full AI
+  }
+
+  function updateEvalBar(score) {
+    if (!els.evalFill || !els.evalLabel) return;
+
+    var aiPercent = scoreToPercent(score);
+    // eval-fill is positioned from the right, representing AI's share
+    els.evalFill.style.width = aiPercent + '%';
+
+    if (Math.abs(score) < 3) {
+      els.evalLabel.textContent = 'Even';
+    } else if (score > 0) {
+      els.evalLabel.textContent = 'AI +' + Math.round(score);
+    } else {
+      els.evalLabel.textContent = 'You +' + Math.round(-score);
+    }
+  }
+
+  function renderAnalysis(analysis, chosenTileId, chosenEnd) {
+    if (!els.analysisList || !els.analysisPanel) return;
+    if (!analysis || analysis.length === 0) {
+      els.analysisPanel.style.display = 'none';
+      return;
+    }
+
+    els.analysisList.innerHTML = '';
+
+    for (var i = 0; i < analysis.length; i++) {
+      var entry = analysis[i];
+      var pill = document.createElement('span');
+      var isBest = (entry.tileId === chosenTileId && entry.end === chosenEnd);
+      pill.className = 'analysis-pill' + (isBest ? ' analysis-pill--best' : '');
+
+      var endLabel = entry.end === 'left' ? 'L' : 'R';
+      var scoreSign = entry.score >= 0 ? '+' : '';
+      var scoreClass = entry.score > 0 ? 'pill-score--pos' : (entry.score < 0 ? 'pill-score--neg' : '');
+
+      pill.innerHTML = '[' + entry.tileId.replace('-', '|') + ']' + endLabel +
+        ' <span class="pill-score ' + scoreClass + '">' + scoreSign + Math.round(entry.score) + '</span>';
+
+      els.analysisList.appendChild(pill);
+    }
+
+    els.analysisPanel.style.display = 'block';
+  }
+
+  function clearAnalysis() {
+    if (!els.analysisPanel) return;
+    els.analysisPanel.style.display = 'none';
+    if (els.analysisList) els.analysisList.innerHTML = '';
   }
 
   function updateScoreboard() {

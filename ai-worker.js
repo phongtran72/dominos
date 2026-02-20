@@ -879,6 +879,10 @@ function chooseMoveHard(aiTileDescs, humanTileDescs, left, right, moveHistory, l
 
   var bestMove = legalMoves[0];
   var prevScore = 0;
+  var lastDepth = 0;
+  var lastNodes = 0;
+  var rootScores = {};
+  var committedScores = {};
   timeStart = Date.now();
 
   // Iterative deepening
@@ -991,6 +995,8 @@ function chooseMoveHard(aiTileDescs, humanTileDescs, left, right, moveHistory, l
         gPly = 0;
         gConsPass = 0;
 
+        rootScores[tIdx + '_' + end] = score;
+
         if (score > iterBestScore) {
           iterBestScore = score;
           iterBestTileIdx = tIdx;
@@ -1024,6 +1030,9 @@ function chooseMoveHard(aiTileDescs, humanTileDescs, left, right, moveHistory, l
       if (iterComplete && mapped) {
         bestMove = mapped;
         prevScore = iterBestScore;
+        lastDepth = iterDepth;
+        lastNodes = nodeCount;
+        for (var key in rootScores) committedScores[key] = rootScores[key];
       } else if (mapped) {
         if (mapped === bestMove || iterBestScore > 500) {
           bestMove = mapped;
@@ -1045,7 +1054,21 @@ function chooseMoveHard(aiTileDescs, humanTileDescs, left, right, moveHistory, l
     }
   }
 
-  return bestMove;
+  // Build analysis array
+  var analysis = [];
+  for (var key in committedScores) {
+    var parts = key.split('_');
+    var ti = parseInt(parts[0]);
+    var ei = parseInt(parts[1]);
+    analysis.push({
+      tileId: TILE_LOW[ti] + '-' + TILE_HIGH[ti],
+      end: ei === 0 ? 'left' : 'right',
+      score: committedScores[key]
+    });
+  }
+  analysis.sort(function (a, b) { return b.score - a.score; });
+
+  return { move: bestMove, bestScore: prevScore, depth: lastDepth, nodes: lastNodes, analysis: analysis };
 }
 
 function findLegalMove(legalMoves, tileId, endStr) {
@@ -1084,14 +1107,15 @@ onmessage = function (e) {
   }
   if (legalMoves.length === 1) {
     var lm = legalMoves[0];
-    postMessage({ tileId: Math.min(lm.tileLow, lm.tileHigh) + '-' + Math.max(lm.tileLow, lm.tileHigh), end: lm.end });
+    postMessage({ tileId: Math.min(lm.tileLow, lm.tileHigh) + '-' + Math.max(lm.tileLow, lm.tileHigh), end: lm.end, bestScore: 0, depth: 0, nodes: 0, analysis: [] });
     return;
   }
 
   // Run the hard AI search
-  var best = chooseMoveHard(data.aiTiles, data.humanTiles, left, right, moveHistory, legalMoves);
+  var result = chooseMoveHard(data.aiTiles, data.humanTiles, left, right, moveHistory, legalMoves);
+  var best = result.move;
 
   // Post result back
   var bestId = Math.min(best.tileLow, best.tileHigh) + '-' + Math.max(best.tileLow, best.tileHigh);
-  postMessage({ tileId: bestId, end: best.end });
+  postMessage({ tileId: bestId, end: best.end, bestScore: result.bestScore, depth: result.depth, nodes: result.nodes, analysis: result.analysis });
 };

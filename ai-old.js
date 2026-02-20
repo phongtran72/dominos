@@ -748,7 +748,9 @@
 
     chooseMove(legalMoves, engine) {
       if (legalMoves.length === 0) return null;
-      if (legalMoves.length === 1) return legalMoves[0];
+      if (legalMoves.length === 1) {
+        return { move: legalMoves[0], bestScore: 0, depth: 0, nodes: 0, analysis: [] };
+      }
 
       if (this.difficulty === 'hard') {
         return this.chooseMoveHard(legalMoves, engine);
@@ -757,7 +759,8 @@
     }
 
     chooseMoveEasy(legalMoves) {
-      return legalMoves[Math.floor(Math.random() * legalMoves.length)];
+      var move = legalMoves[Math.floor(Math.random() * legalMoves.length)];
+      return { move: move, bestScore: 0, depth: 0, nodes: 0, analysis: [] };
     }
 
     chooseMoveHard(legalMoves, engine) {
@@ -806,6 +809,10 @@
       var TIME_BUDGET = 2000; // milliseconds
       var startTime = Date.now();
       var prevScore = 0; // for aspiration windows
+      var lastDepth = 0;
+      var lastNodes = 0;
+      var rootScores = {};
+      var committedScores = {};
 
       // Iterative deepening loop: depth 1, 2, 3, ... up to ceiling
       for (var iterDepth = 1; iterDepth <= depthCeiling; iterDepth++) {
@@ -892,6 +899,8 @@
                               0, 1, newEnds[0], newEnds[1], tile, p1Who, p1L, p1R, childHash, 0);
             }
 
+            rootScores[tile.id + '_' + endStr] = score;
+
             if (score > iterBestScore) {
               iterBestScore = score;
               iterBestMove = this.findLegalMove(legalMoves, tile, endStr);
@@ -927,6 +936,9 @@
         if (iterComplete && iterBestMove) {
           bestMove = iterBestMove;
           prevScore = iterBestScore;
+          lastDepth = iterDepth;
+          lastNodes = nodeCount;
+          for (var rk in rootScores) committedScores[rk] = rootScores[rk];
         } else if (iterBestMove) {
           // Partial iteration: use result if it confirms PV or finds a forced win
           if (iterBestMove === bestMove || iterBestScore > 500) {
@@ -961,7 +973,17 @@
         }
       }
 
-      return bestMove;
+      // Build analysis array from committed scores
+      var analysis = [];
+      for (var key in committedScores) {
+        var lastUnderscore = key.lastIndexOf('_');
+        var tid = key.substring(0, lastUnderscore);
+        var estr = key.substring(lastUnderscore + 1);
+        analysis.push({ tileId: tid, end: estr, score: committedScores[key] });
+      }
+      analysis.sort(function (a, b) { return b.score - a.score; });
+
+      return { move: bestMove, bestScore: prevScore, depth: lastDepth, nodes: lastNodes, analysis: analysis };
     }
 
     // Map internal tile+end to the engine's legalMoves array entry
@@ -976,6 +998,14 @@
         if (legalMoves[i].tile === tile) return legalMoves[i];
       }
       return legalMoves[0];
+    }
+
+    evaluatePosition(engine) {
+      var hand = engine.hand;
+      var board = hand.board;
+      var left = board.isEmpty() ? null : board.leftEnd;
+      var right = board.isEmpty() ? null : board.rightEnd;
+      return evaluate(hand.aiHand.tiles, hand.humanHand.tiles, left, right);
     }
   }
 

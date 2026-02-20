@@ -49,6 +49,16 @@
       <button id="pass-btn" class="btn btn-pass" style="display:none;">Pass</button>
     </div>
 
+    <!-- Eval Bar -->
+    <div id="eval-bar-container">
+      <span class="eval-side eval-side--you">You</span>
+      <div id="eval-bar">
+        <div id="eval-fill"></div>
+      </div>
+      <span class="eval-side eval-side--ai">AI</span>
+      <span id="eval-label">Even</span>
+    </div>
+
     <!-- Board -->
     <div id="board-area">
       <div id="board-left-marker" class="end-marker" style="display:none;">
@@ -58,6 +68,12 @@
       <div id="board-right-marker" class="end-marker" style="display:none;">
         <span class="end-arrow">&rarr;</span>
       </div>
+    </div>
+
+    <!-- AI Analysis Panel -->
+    <div id="analysis-panel" style="display:none;">
+      <div id="analysis-label">AI considered (best → worst):</div>
+      <div id="analysis-list"></div>
     </div>
 
     <!-- Human Hand -->

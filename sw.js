@@ -1,5 +1,5 @@
 // Service Worker — offline caching for Dominos PWA
-var CACHE_NAME = 'dominos-v8';
+var CACHE_NAME = 'dominos-v9';
 var ASSETS = [
   './',
   './index.html',
