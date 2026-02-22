@@ -152,6 +152,7 @@
       <div id="result-body"></div>
       <div class="modal-buttons">
         <button id="review-hand-btn" class="btn btn-secondary">Review Moves</button>
+        <button id="save-hand-btn" class="btn btn-secondary" style="display:none;">Save</button>
         <button id="next-hand-btn" class="btn btn-primary">Next Hand</button>
       </div>
     </div>
@@ -177,6 +178,18 @@
       <p class="subtitle">Save the tile deals to replay this match</p>
       <div id="save-slots"></div>
       <button id="save-skip-btn" class="btn btn-secondary" style="margin-top:16px;">No Thanks</button>
+    </div>
+  </div>
+
+  <!-- Post-Save Confirmation Overlay (mid-match) -->
+  <div id="post-save-overlay" class="overlay" style="display:none;">
+    <div class="modal">
+      <h2>Game Saved!</h2>
+      <p class="subtitle">Your progress has been saved.</p>
+      <div class="modal-buttons">
+        <button id="post-save-continue-btn" class="btn btn-primary">Continue Match</button>
+        <button id="post-save-newgame-btn" class="btn btn-secondary">New Game</button>
+      </div>
     </div>
   </div>
 

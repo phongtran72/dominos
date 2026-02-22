@@ -43,6 +43,7 @@
   var matchDeals = [];         // accumulates {leader, humanTiles, aiTiles} per hand during match
   var replayDeals = null;      // saved deal being replayed (or null)
   var replayHandIndex = 0;     // which hand we're on during replay
+  var isMidMatchSave = false;  // true when save prompt is triggered mid-match (not at match end)
 
   function loadAllDeals() {
     try {
@@ -178,14 +179,25 @@
   function onSaveToSlot(index) {
     saveDealToSlot(index);
     els.saveOverlay.style.display = 'none';
-    els.startOverlay.style.display = 'flex';
-    renderSavedDeals();
+    if (isMidMatchSave) {
+      isMidMatchSave = false;
+      els.postSaveOverlay.style.display = 'flex';
+      renderSavedDeals();
+    } else {
+      els.startOverlay.style.display = 'flex';
+      renderSavedDeals();
+    }
   }
 
   function onSkipSave() {
     els.saveOverlay.style.display = 'none';
-    els.startOverlay.style.display = 'flex';
-    renderSavedDeals();
+    if (isMidMatchSave) {
+      isMidMatchSave = false;
+      els.resultOverlay.style.display = 'flex';
+    } else {
+      els.startOverlay.style.display = 'flex';
+      renderSavedDeals();
+    }
   }
 
   function onReplayDeal(index) {
@@ -264,6 +276,8 @@
     els.saveOverlay = document.getElementById('save-overlay');
     els.saveSlots = document.getElementById('save-slots');
     els.saveSkipBtn = document.getElementById('save-skip-btn');
+    els.saveHandBtn = document.getElementById('save-hand-btn');
+    els.postSaveOverlay = document.getElementById('post-save-overlay');
 
     setupEventListeners();
     initWorker();
@@ -369,6 +383,11 @@
 
     // Save prompt
     document.getElementById('save-skip-btn').addEventListener('click', onSkipSave);
+
+    // Mid-match save from hand result
+    document.getElementById('save-hand-btn').addEventListener('click', onSaveHand);
+    document.getElementById('post-save-continue-btn').addEventListener('click', onPostSaveContinue);
+    document.getElementById('post-save-newgame-btn').addEventListener('click', onPostSaveNewGame);
   }
 
   // ---- Start Screen ----
@@ -1021,9 +1040,13 @@
         els.resultOverlay.style.display = 'none';
         showMatchResult(matchWinner);
       };
+      // Hide save button — match-end save happens via match overlay
+      els.saveHandBtn.style.display = 'none';
     } else {
       document.getElementById('next-hand-btn').textContent = 'Next Hand';
       document.getElementById('next-hand-btn').onclick = onNextHand;
+      // Show save button for mid-match saves
+      els.saveHandBtn.style.display = '';
     }
 
     els.resultOverlay.style.display = 'flex';
@@ -1063,6 +1086,23 @@
 
   function onNewGame() {
     els.matchOverlay.style.display = 'none';
+    els.startOverlay.style.display = 'flex';
+    renderSavedDeals();
+  }
+
+  function onSaveHand() {
+    isMidMatchSave = true;
+    els.resultOverlay.style.display = 'none';
+    showSavePrompt();
+  }
+
+  function onPostSaveContinue() {
+    els.postSaveOverlay.style.display = 'none';
+    showLeaderChoice();
+  }
+
+  function onPostSaveNewGame() {
+    els.postSaveOverlay.style.display = 'none';
     els.startOverlay.style.display = 'flex';
     renderSavedDeals();
   }
