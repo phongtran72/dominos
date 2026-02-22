@@ -572,6 +572,21 @@ body {
   background: #d05050;
 }
 
+.btn-undo {
+  background: rgba(255, 255, 255, 0.12);
+  color: #f0d060;
+  border: 1px solid rgba(240, 208, 96, 0.4);
+  padding: 4px 14px;
+  font-size: 0.8rem;
+  min-height: 32px;
+  border-radius: 6px;
+}
+
+.btn-undo:hover {
+  background: rgba(240, 208, 96, 0.2);
+  color: #fff;
+}
+
 .btn-nav {
   background: rgba(255, 255, 255, 0.12);
   color: #d4f0d4;

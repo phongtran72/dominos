@@ -248,6 +248,8 @@
     els.analysisPanel = document.getElementById('analysis-panel');
     els.analysisList = document.getElementById('analysis-list');
 
+    els.undoBtn = document.getElementById('undo-btn');
+
     els.startOverlay = document.getElementById('start-overlay');
     els.leaderOverlay = document.getElementById('leader-overlay');
     els.resultOverlay = document.getElementById('result-overlay');
@@ -328,6 +330,9 @@
     // Board end markers
     els.boardLeftMarker.addEventListener('click', function () { onEndClicked('left'); });
     els.boardRightMarker.addEventListener('click', function () { onEndClicked('right'); });
+
+    // Undo button
+    els.undoBtn.addEventListener('click', onUndo);
 
     // History navigation
     els.navBackward.addEventListener('click', goBackward);
@@ -420,12 +425,166 @@
     hideEndMarkers();
     updateNavButtons();
 
+    updateUndoButton();
+
     if (leader === 'human') {
       startHumanTurn();
     } else {
       setStatus('AI is thinking...');
       disableHumanHand();
       setTimeout(function () { executeAITurn(); }, 500);
+    }
+  }
+
+  // ---- Undo ----
+
+  function canUndo() {
+    if (!engine || !engine.hand) return false;
+    if (isProcessing) return false;
+    if (handOver) return false;
+    var history = engine.hand.moveHistory;
+    // Need at least one human move in history to undo
+    for (var i = 0; i < history.length; i++) {
+      if (history[i].player === 'human') return true;
+    }
+    return false;
+  }
+
+  function onUndo() {
+    if (isProcessing) return;
+
+    // If reviewing, truncate history at viewIndex and resume from there
+    if (isReviewing) {
+      undoFromReview();
+      return;
+    }
+
+    if (!canUndo()) return;
+
+    var history = engine.hand.moveHistory;
+
+    // Undo moves back until we've removed one human action.
+    // Typically this means: undo AI's response, then undo human's move.
+    var undoneHumanMove = false;
+    while (history.length > 0 && !undoneHumanMove) {
+      var lastMove = history[history.length - 1];
+      if (lastMove.player === 'human') {
+        engine.undoLastMove();
+        undoneHumanMove = true;
+      } else {
+        engine.undoLastMove();
+      }
+    }
+
+    if (!undoneHumanMove) return;
+
+    // Reset UI state
+    selectedTile = null;
+    selectedMoves = [];
+    lastAIAnalysis = null;
+
+    // Re-render everything
+    renderBoard();
+    renderHumanHand();
+    renderAIHand();
+    updateScoreboard();
+    hideEndMarkers();
+
+    // Restore eval bar from the last move in history (or reset)
+    if (history.length > 0) {
+      var lastEntry = history[history.length - 1];
+      if (lastEntry.evalScore !== undefined) {
+        updateEvalBar(lastEntry.evalScore);
+      } else {
+        updateEvalBar(0);
+      }
+      if (lastEntry.analysis && lastEntry.analysis.length > 0) {
+        var cid = lastEntry.tile ? lastEntry.tile.id : null;
+        renderAnalysis(lastEntry.analysis, cid, lastEntry.end);
+      } else {
+        clearAnalysis();
+      }
+    } else {
+      updateEvalBar(0);
+      clearAnalysis();
+    }
+
+    // If it's now AI's turn (e.g. human undid to before AI led), run AI
+    if (engine.hand.currentPlayer === 'ai') {
+      setStatus('AI is thinking...');
+      disableHumanHand();
+      updateNavButtons();
+      setTimeout(function () { executeAITurn(); }, 500);
+    } else {
+      startHumanTurn();
+    }
+  }
+
+  function undoFromReview() {
+    // Truncate history at viewIndex+1 (keep moves 0..viewIndex, discard the rest)
+    var history = engine.hand.moveHistory;
+    var keepCount = viewIndex + 1;
+    if (keepCount < 0) keepCount = 0;
+
+    // Remove extra moves from the end, restoring tiles to hands
+    while (history.length > keepCount) {
+      engine.undoLastMove();
+    }
+
+    // Exit review mode
+    viewIndex = -1;
+    isReviewing = false;
+    els.statusMessage.classList.remove('reviewing');
+
+    selectedTile = null;
+    selectedMoves = [];
+    lastAIAnalysis = null;
+
+    // Re-render
+    renderBoard();
+    renderHumanHand();
+    renderAIHand();
+    updateScoreboard();
+    hideEndMarkers();
+
+    if (history.length > 0) {
+      var lastEntry = history[history.length - 1];
+      if (lastEntry.evalScore !== undefined) {
+        updateEvalBar(lastEntry.evalScore);
+      } else {
+        updateEvalBar(0);
+      }
+      if (lastEntry.analysis && lastEntry.analysis.length > 0) {
+        var cid = lastEntry.tile ? lastEntry.tile.id : null;
+        renderAnalysis(lastEntry.analysis, cid, lastEntry.end);
+      } else {
+        clearAnalysis();
+      }
+    } else {
+      updateEvalBar(0);
+      clearAnalysis();
+    }
+
+    // Resume play from whoever's turn it is now
+    if (engine.hand.currentPlayer === 'ai') {
+      setStatus('AI is thinking...');
+      disableHumanHand();
+      updateNavButtons();
+      setTimeout(function () { executeAITurn(); }, 500);
+    } else {
+      startHumanTurn();
+    }
+  }
+
+  function updateUndoButton() {
+    if (!els.undoBtn) return;
+    if (isReviewing) {
+      // Show undo in review mode (allows truncating history here)
+      els.undoBtn.style.display = (viewIndex >= 0) ? 'inline-block' : 'none';
+    } else if (canUndo()) {
+      els.undoBtn.style.display = 'inline-block';
+    } else {
+      els.undoBtn.style.display = 'none';
     }
   }
 
@@ -440,6 +599,7 @@
       els.passBtn.style.display = 'inline-block';
       disableHumanHand();
       hideEndMarkers();
+      updateUndoButton();
       return;
     }
 
@@ -447,6 +607,7 @@
     setStatus('Your turn — select a tile to play.');
     renderHumanHand();
     updateNavButtons();
+    updateUndoButton();
   }
 
   function onTileClicked(tile) {
@@ -533,6 +694,7 @@
     setStatus('AI is thinking...');
     disableHumanHand();
     updateNavButtons();
+    els.undoBtn.style.display = 'none';
     setTimeout(function () { executeAITurn(); }, 500);
   }
 
@@ -540,6 +702,7 @@
     if (isProcessing || isReviewing) return;
     isProcessing = true;
     els.passBtn.style.display = 'none';
+    els.undoBtn.style.display = 'none';
 
     var blockResult = engine.pass('human');
 
@@ -787,6 +950,7 @@
     els.statusMessage.classList.remove('reviewing');
     els.navBackward.style.display = 'none';
     els.navForward.style.display = 'none';
+    els.undoBtn.style.display = 'none';
     clearAnalysis();
 
     // Reveal AI's remaining tiles
@@ -1179,6 +1343,7 @@
     els.passBtn.style.display = 'none';
     hideEndMarkers();
     updateNavButtons();
+    updateUndoButton();
 
     // Show stored analysis and eval for this move
     if (viewIndex >= 0) {
@@ -1239,9 +1404,10 @@
     renderHumanHand();
     renderAIHandRevealed();
 
-    // Hide nav buttons behind overlay
+    // Hide nav/undo buttons behind overlay
     els.navBackward.style.display = 'none';
     els.navForward.style.display = 'none';
+    els.undoBtn.style.display = 'none';
     clearAnalysis();
 
     setStatus('Hand over');
