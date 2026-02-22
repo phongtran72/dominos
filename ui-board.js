@@ -1,5 +1,6 @@
 // ============================================================
-// ui.js — DOM Rendering, Event Handling, Game Controller
+// ui-board.js — Snake/Chain Board UI (fork of ui.js)
+// Renders domino tiles in a 2D serpentine chain layout
 // ============================================================
 
 (function (D) {
@@ -17,6 +18,12 @@
     6: [0, 2, 3, 5, 6, 8]
   };
 
+  // Direction constants
+  var DIR_RIGHT = 0;
+  var DIR_DOWN  = 1;
+  var DIR_LEFT  = 2;
+  var DIR_UP    = 3;
+
   // --- DOM References ---
   var els = {};
   var engine = null;
@@ -30,19 +37,23 @@
   var isProcessing = false;
 
   // --- History Navigation State ---
-  var initialHumanTiles = null;  // Tile[] saved at deal time
+  var initialHumanTiles = null;
   var initialAITiles = null;
-  var viewIndex = -1;            // -1 = live, 0..N = viewing move N
+  var viewIndex = -1;
   var isReviewing = false;
-  var handOver = false;          // true once hand/match result is shown
-  var handResult = null;         // cached result for re-showing overlay
-  var lastAIAnalysis = null;     // { bestScore, depth, nodes, analysis }
+  var handOver = false;
+  var handResult = null;
+  var lastAIAnalysis = null;
+
+  // --- Snake Layout State ---
+  var currentLayout = [];     // cached layout for end marker positioning
+  var currentBounds = null;   // bounding box of current layout
 
   // --- Deal Save/Replay System ---
   var SAVE_KEY = 'dominos-deals';
-  var matchDeals = [];         // accumulates {leader, humanTiles, aiTiles} per hand during match
-  var replayDeals = null;      // saved deal being replayed (or null)
-  var replayHandIndex = 0;     // which hand we're on during replay
+  var matchDeals = [];
+  var replayDeals = null;
+  var replayHandIndex = 0;
 
   function loadAllDeals() {
     try {
@@ -60,9 +71,7 @@
   function saveAllDeals(slots) {
     try {
       localStorage.setItem(SAVE_KEY, JSON.stringify(slots));
-    } catch (e) {
-      // Safari private browsing or quota exceeded — fail silently
-    }
+    } catch (e) { }
   }
 
   function saveDealToSlot(index) {
@@ -193,7 +202,6 @@
     var deal = slots[index];
     if (!deal) return;
 
-    // Set settings from saved deal
     difficulty = deal.difficulty;
     selectedEngine = deal.selectedEngine;
     openTiles = deal.openTiles;
@@ -212,7 +220,6 @@
 
     els.startOverlay.style.display = 'none';
 
-    // Use the first hand's leader from the saved deal
     if (replayDeals.hands.length > 0) {
       startHand(replayDeals.hands[0].leader);
     } else {
@@ -225,6 +232,9 @@
     renderSavedDeals();
   }
 
+  // ============================================================
+  // Init
+  // ============================================================
   function init() {
     els.humanScore = document.getElementById('human-score');
     els.aiScore = document.getElementById('ai-score');
@@ -265,11 +275,23 @@
     els.saveSlots = document.getElementById('save-slots');
     els.saveSkipBtn = document.getElementById('save-skip-btn');
 
+    // Move end markers inside #board for absolute positioning
+    els.board.appendChild(els.boardLeftMarker);
+    els.board.appendChild(els.boardRightMarker);
+
     setupEventListeners();
     initWorker();
-
-    // Populate saved deals list on start screen
     renderSavedDeals();
+
+    // Recompute layout on resize
+    if (typeof ResizeObserver !== 'undefined') {
+      var ro = new ResizeObserver(function () {
+        if (engine && engine.hand && !isReviewing) {
+          renderBoard();
+        }
+      });
+      ro.observe(els.boardArea);
+    }
   }
 
   function initWorker() {
@@ -324,15 +346,6 @@
         location.reload();
       });
     }
-    // Highlight active board style button
-    var currentStyle = localStorage.getItem('dominos-boardstyle') || 'snake';
-    for (var i = 0; i < styleBtns.length; i++) {
-      if (styleBtns[i].getAttribute('data-boardstyle') === currentStyle) {
-        styleBtns[i].classList.add('active');
-      } else {
-        styleBtns[i].classList.remove('active');
-      }
-    }
 
     // Start button
     document.getElementById('start-btn').addEventListener('click', onStartMatch);
@@ -363,12 +376,22 @@
     document.getElementById('review-hand-btn').addEventListener('click', onReviewHand);
     document.getElementById('review-match-btn').addEventListener('click', onReviewMatch);
 
-    // Play again (next-hand-btn onclick is set dynamically in showHandResult)
+    // Play again
     document.getElementById('play-again-btn').addEventListener('click', onPlayAgain);
     document.getElementById('new-game-btn').addEventListener('click', onNewGame);
 
     // Save prompt
     document.getElementById('save-skip-btn').addEventListener('click', onSkipSave);
+
+    // Highlight active board style button
+    var currentStyle = localStorage.getItem('dominos-boardstyle') || 'snake';
+    for (var i = 0; i < styleBtns.length; i++) {
+      if (styleBtns[i].getAttribute('data-boardstyle') === currentStyle) {
+        styleBtns[i].classList.add('active');
+      } else {
+        styleBtns[i].classList.remove('active');
+      }
+    }
   }
 
   // ---- Start Screen ----
@@ -390,10 +413,8 @@
 
   function showLeaderChoice() {
     if (replayDeals && replayHandIndex < replayDeals.hands.length) {
-      // Replay mode — use saved leader, skip choice overlay
       startHand(replayDeals.hands[replayHandIndex].leader);
     } else if (engine.previousHandWinner) {
-      // Subsequent hand — previous winner leads
       startHand(engine.previousHandWinner);
     } else {
       els.leaderOverlay.style.display = 'flex';
@@ -407,7 +428,6 @@
 
   // ---- Hand Flow ----
   function startHand(leader) {
-    // Use saved deal if replaying, otherwise shuffle normally
     if (replayDeals && replayHandIndex < replayDeals.hands.length) {
       var deal = replayDeals.hands[replayHandIndex];
       engine.dealHandFromTiles(deal.leader, deal.humanTiles, deal.aiTiles);
@@ -417,14 +437,12 @@
       engine.dealHand(leader);
     }
 
-    // Record this deal for potential saving later
     matchDeals.push({
       leader: leader,
       humanTiles: engine.hand.humanHand.tiles.map(function (t) { return { low: t.low, high: t.high }; }),
       aiTiles: engine.hand.aiHand.tiles.map(function (t) { return { low: t.low, high: t.high }; })
     });
 
-    // Save initial hand state for history navigation
     initialHumanTiles = engine.hand.humanHand.tiles.slice();
     initialAITiles = engine.hand.aiHand.tiles.slice();
     viewIndex = -1;
@@ -445,7 +463,6 @@
     renderBoard();
     hideEndMarkers();
     updateNavButtons();
-
     updateUndoButton();
 
     if (leader === 'human') {
@@ -458,13 +475,11 @@
   }
 
   // ---- Undo ----
-
   function canUndo() {
     if (!engine || !engine.hand) return false;
     if (isProcessing) return false;
     if (handOver) return false;
     var history = engine.hand.moveHistory;
-    // Need at least one human move in history to undo
     for (var i = 0; i < history.length; i++) {
       if (history[i].player === 'human') return true;
     }
@@ -474,7 +489,6 @@
   function onUndo() {
     if (isProcessing) return;
 
-    // If reviewing, truncate history at viewIndex and resume from there
     if (isReviewing) {
       undoFromReview();
       return;
@@ -483,9 +497,6 @@
     if (!canUndo()) return;
 
     var history = engine.hand.moveHistory;
-
-    // Undo moves back until we've removed one human action.
-    // Typically this means: undo AI's response, then undo human's move.
     var undoneHumanMove = false;
     while (history.length > 0 && !undoneHumanMove) {
       var lastMove = history[history.length - 1];
@@ -499,19 +510,16 @@
 
     if (!undoneHumanMove) return;
 
-    // Reset UI state
     selectedTile = null;
     selectedMoves = [];
     lastAIAnalysis = null;
 
-    // Re-render everything
     renderBoard();
     renderHumanHand();
     renderAIHand();
     updateScoreboard();
     hideEndMarkers();
 
-    // Restore eval bar from the last move in history (or reset)
     if (history.length > 0) {
       var lastEntry = history[history.length - 1];
       if (lastEntry.evalScore !== undefined) {
@@ -530,7 +538,6 @@
       clearAnalysis();
     }
 
-    // If it's now AI's turn (e.g. human undid to before AI led), run AI
     if (engine.hand.currentPlayer === 'ai') {
       setStatus('AI is thinking...');
       disableHumanHand();
@@ -542,17 +549,14 @@
   }
 
   function undoFromReview() {
-    // Truncate history at viewIndex+1 (keep moves 0..viewIndex, discard the rest)
     var history = engine.hand.moveHistory;
     var keepCount = viewIndex + 1;
     if (keepCount < 0) keepCount = 0;
 
-    // Remove extra moves from the end, restoring tiles to hands
     while (history.length > keepCount) {
       engine.undoLastMove();
     }
 
-    // Exit review mode
     viewIndex = -1;
     isReviewing = false;
     els.statusMessage.classList.remove('reviewing');
@@ -561,7 +565,6 @@
     selectedMoves = [];
     lastAIAnalysis = null;
 
-    // Re-render
     renderBoard();
     renderHumanHand();
     renderAIHand();
@@ -586,7 +589,6 @@
       clearAnalysis();
     }
 
-    // Resume play from whoever's turn it is now
     if (engine.hand.currentPlayer === 'ai') {
       setStatus('AI is thinking...');
       disableHumanHand();
@@ -600,7 +602,6 @@
   function updateUndoButton() {
     if (!els.undoBtn) return;
     if (isReviewing) {
-      // Show undo in review mode (allows truncating history here)
       els.undoBtn.style.display = (viewIndex >= 0) ? 'inline-block' : 'none';
     } else if (canUndo()) {
       els.undoBtn.style.display = 'inline-block';
@@ -615,7 +616,6 @@
     var legalMoves = engine.getLegalMoves('human');
 
     if (legalMoves.length === 0) {
-      // Must pass
       setStatus('No legal moves — you must pass.');
       els.passBtn.style.display = 'inline-block';
       disableHumanHand();
@@ -634,14 +634,11 @@
   function onTileClicked(tile) {
     if (isProcessing || isReviewing) return;
     var legalMoves = engine.getLegalMoves('human');
-
-    // Find moves for this tile
     var tileMoves = legalMoves.filter(function (m) { return m.tile === tile; });
 
     if (tileMoves.length === 0) return;
 
     if (selectedTile === tile) {
-      // Deselect
       selectedTile = null;
       selectedMoves = [];
       renderHumanHand();
@@ -655,16 +652,13 @@
     renderHumanHand();
 
     if (engine.hand.board.isEmpty()) {
-      // First play — place directly
       onEndClicked('left');
       return;
     }
 
     if (tileMoves.length === 1) {
-      // Only one end possible — auto-place
       onEndClicked(tileMoves[0].end);
     } else {
-      // Show both end markers
       showEndMarkers(tileMoves);
       setStatus('Choose which end to play on.');
     }
@@ -673,7 +667,6 @@
   function onEndClicked(end) {
     if (!selectedTile || isProcessing || isReviewing) return;
 
-    // Validate the move
     var move = null;
     for (var i = 0; i < selectedMoves.length; i++) {
       if (selectedMoves[i].end === end) {
@@ -695,12 +688,10 @@
     renderAIHand();
     updateScoreboard();
 
-    // Eval bar after human move (quick static eval, no search)
     var humanEval = ai.evaluatePosition(engine);
     updateEvalBar(humanEval);
     clearAnalysis();
 
-    // Attach eval to moveHistory
     var history = engine.hand.moveHistory;
     if (history.length > 0) {
       history[history.length - 1].evalScore = humanEval;
@@ -711,7 +702,6 @@
       return;
     }
 
-    // AI's turn
     setStatus('AI is thinking...');
     disableHumanHand();
     updateNavButtons();
@@ -739,7 +729,6 @@
 
   function applyAIMove(move, elapsed) {
     if (openTiles) {
-      // Animate the tile flying from AI hand to board
       animateAITile(move, function () {
         finishAIMove(move, elapsed);
       });
@@ -757,12 +746,10 @@
     renderHumanHand();
     updateScoreboard();
 
-    // Show eval bar and analysis
     if (lastAIAnalysis) {
       updateEvalBar(lastAIAnalysis.bestScore);
       renderAnalysis(lastAIAnalysis.analysis, move.tile.id, move.end);
 
-      // Attach to moveHistory for review mode
       var history = engine.hand.moveHistory;
       if (history.length > 0) {
         var lastEntry = history[history.length - 1];
@@ -771,8 +758,6 @@
       }
     }
 
-    // Adaptive post-play delay: if minimax took a while, reduce the
-    // pause so total feel stays consistent (~600ms visible after play)
     var postDelay = Math.max(300, 600 - elapsed);
 
     if (result.handEnd) {
@@ -786,23 +771,19 @@
     }, postDelay);
   }
 
-  // Animate an AI tile flying from the AI hand area to the board
+  // ============================================================
+  // AI Tile Animation — fly from AI hand to snake board position
+  // ============================================================
   function animateAITile(move, callback) {
     var tileId = move.tile.id;
     var sourceEl = els.aiHand.querySelector('[data-tile-id="' + tileId + '"]');
 
     if (!sourceEl) {
-      // Fallback: no source element found (hidden mode), skip animation
       callback();
       return;
     }
 
-    // Get source position
     var sourceRect = sourceEl.getBoundingClientRect();
-
-    // Find target: the left or right end of the board
-    var boardRect = els.boardArea.getBoundingClientRect();
-    var targetRect;
 
     // Create flying clone
     var clone = sourceEl.cloneNode(true);
@@ -815,22 +796,28 @@
     clone.style.height = sourceRect.height + 'px';
     document.body.appendChild(clone);
 
-    // Ghost the original tile
     sourceEl.classList.add('tile--ghost');
 
-    // Compute target: fly to the correct end of the board
-    var boardTiles = els.board.children;
-    if (boardTiles.length > 0 && move.end === 'left') {
-      targetRect = boardTiles[0].getBoundingClientRect();
-    } else if (boardTiles.length > 0 && move.end === 'right') {
-      targetRect = boardTiles[boardTiles.length - 1].getBoundingClientRect();
-    } else {
-      targetRect = boardRect;
-    }
-    var targetX = targetRect.left + targetRect.width / 2 - sourceRect.width / 2;
-    var targetY = targetRect.top + targetRect.height / 2 - sourceRect.height / 2;
+    // Target: endpoint of the snake chain
+    var boardAreaRect = els.boardArea.getBoundingClientRect();
+    var targetX, targetY;
 
-    // Trigger animation in next frame
+    if (currentLayout.length > 0) {
+      var targetLayout;
+      if (move.end === 'left') {
+        targetLayout = currentLayout[0];
+      } else {
+        targetLayout = currentLayout[currentLayout.length - 1];
+      }
+      // Convert from board-relative to viewport coords
+      var boardElRect = els.board.getBoundingClientRect();
+      targetX = boardElRect.left + targetLayout.pixelX + targetLayout.widthPx / 2 - sourceRect.width / 2;
+      targetY = boardElRect.top + targetLayout.pixelY + targetLayout.heightPx / 2 - sourceRect.height / 2;
+    } else {
+      targetX = boardAreaRect.left + boardAreaRect.width / 2 - sourceRect.width / 2;
+      targetY = boardAreaRect.top + boardAreaRect.height / 2 - sourceRect.height / 2;
+    }
+
     requestAnimationFrame(function () {
       requestAnimationFrame(function () {
         clone.style.left = targetX + 'px';
@@ -839,7 +826,6 @@
       });
     });
 
-    // Guard against double-fire (transitionend + safety timeout)
     var animDone = false;
     function onAnimComplete() {
       if (animDone) return;
@@ -848,14 +834,12 @@
       callback();
     }
 
-    // Clean up after animation
     clone.addEventListener('transitionend', function onEnd(e) {
-      if (e.target !== clone) return; // ignore child transitions
+      if (e.target !== clone) return;
       clone.removeEventListener('transitionend', onEnd);
       onAnimComplete();
     });
 
-    // Safety fallback in case transitionend doesn't fire
     setTimeout(onAnimComplete, 700);
   }
 
@@ -863,7 +847,6 @@
     var legalMoves = engine.getLegalMoves('ai');
 
     if (legalMoves.length === 0) {
-      // AI passes
       setStatus('AI has no legal moves — AI passes.');
       var blockResult = engine.pass('ai');
 
@@ -879,11 +862,9 @@
       return;
     }
 
-    // Hard mode with Web Worker available → async off-main-thread (bitboard engine only)
     if (difficulty === 'hard' && aiWorker && selectedEngine === 'new') {
       var t0 = Date.now();
 
-      // Serialize state for the worker
       var hand = engine.hand;
       var board = hand.board;
       var msg = {
@@ -912,7 +893,6 @@
         var elapsed = Date.now() - t0;
         var result = e.data;
 
-        // Store analysis data
         lastAIAnalysis = {
           bestScore: result.bestScore || 0,
           depth: result.depth || 0,
@@ -920,7 +900,6 @@
           analysis: result.analysis || []
         };
 
-        // Map result back to a legalMove
         var tileId = result.tileId;
         var end = result.end;
         var move = null;
@@ -931,7 +910,6 @@
           }
         }
         if (!move) {
-          // Fallback: match by tile only
           for (var i = 0; i < legalMoves.length; i++) {
             if (legalMoves[i].tile.id === tileId) { move = legalMoves[i]; break; }
           }
@@ -942,7 +920,6 @@
       };
 
       aiWorker.onerror = function () {
-        // Fallback to synchronous on worker error
         var aiResult = ai.chooseMove(legalMoves, engine);
         lastAIAnalysis = { bestScore: aiResult.bestScore, depth: aiResult.depth, nodes: aiResult.nodes, analysis: aiResult.analysis };
         var elapsed = Date.now() - t0;
@@ -953,7 +930,6 @@
       return;
     }
 
-    // Synchronous path: easy mode or no Worker support
     var t0 = Date.now();
     var aiResult = ai.chooseMove(legalMoves, engine);
     lastAIAnalysis = { bestScore: aiResult.bestScore, depth: aiResult.depth, nodes: aiResult.nodes, analysis: aiResult.analysis };
@@ -974,7 +950,6 @@
     els.undoBtn.style.display = 'none';
     clearAnalysis();
 
-    // Reveal AI's remaining tiles
     renderAIHandRevealed();
 
     var title = '';
@@ -1007,13 +982,11 @@
       body += addGhost13Lines(result);
     }
 
-    // Show updated score
     body += '<div class="result-line" style="margin-top:12px;opacity:0.8;">Score — You: ' + engine.matchScore.human + ' | AI: ' + engine.matchScore.ai + '</div>';
 
     els.resultTitle.textContent = title;
     els.resultBody.innerHTML = body;
 
-    // Check if match is over
     var matchWinner = engine.checkMatchEnd();
     if (matchWinner) {
       document.getElementById('next-hand-btn').textContent = 'See Results';
@@ -1083,46 +1056,185 @@
     enterReviewMode();
   }
 
-  // ---- Rendering ----
+  // ============================================================
+  // Snake Layout Algorithm
+  // ============================================================
 
-  function createTileElement(tile, isVertical) {
-    var el = document.createElement('div');
-    el.className = 'tile ' + (isVertical ? 'tile--vertical' : 'tile--horizontal');
-
-    var leftVal = isVertical ? tile.high : tile.low;
-    var rightVal = isVertical ? tile.low : tile.high;
-
-    el.appendChild(createHalfElement(leftVal));
-    el.appendChild(createHalfElement(rightVal));
-    return el;
+  /**
+   * Get the cell size based on current CSS tile variables.
+   * Cell = half the long tile dimension (half-w in horizontal terms).
+   */
+  function getCellSize() {
+    var cs = getComputedStyle(document.documentElement);
+    var tileH = parseInt(cs.getPropertyValue('--tile-h'), 10) || 34;
+    // Cell size = tile short dimension (height of horizontal tile)
+    return tileH;
   }
 
-  // ---- Board tile creation ----
-  function createBoardTileElement(placement) {
-    var tile = placement.tile;
-    var isVertical = tile.isDouble();
-    var el = document.createElement('div');
-    el.className = 'tile tile--board tile--placed ' + (isVertical ? 'tile--vertical' : 'tile--horizontal');
+  /**
+   * Get tile dimensions from CSS variables
+   */
+  function getTileDims() {
+    var cs = getComputedStyle(document.documentElement);
+    var tw = parseInt(cs.getPropertyValue('--tile-w'), 10) || 64;
+    var th = parseInt(cs.getPropertyValue('--tile-h'), 10) || 34;
+    return { tw: tw, th: th };
+  }
 
-    if (isVertical) {
-      el.appendChild(createHalfElement(tile.high));
-      el.appendChild(createHalfElement(tile.low));
-    } else {
-      if (placement.flipped) {
-        el.appendChild(createHalfElement(tile.high));
-        el.appendChild(createHalfElement(tile.low));
+  /**
+   * Compute the snake/chain layout for an array of board tile placements.
+   * Returns array of layout objects with pixel positions and directions.
+   */
+  function computeSnakeLayout(boardTiles, containerWidthPx) {
+    var dims = getTileDims();
+    var tw = dims.tw;  // long dimension (e.g. 64)
+    var th = dims.th;  // short dimension (e.g. 34)
+    var gap = 2;       // gap between tiles in px
+
+    var layouts = [];
+    if (boardTiles.length === 0) return layouts;
+
+    // Max tiles that fit horizontally
+    var maxHorizPx = containerWidthPx - 20; // some margin
+    var margin = tw + gap; // turn margin in pixels
+
+    // Cursor state
+    var cx = 0;      // current x position (pixels)
+    var cy = 0;      // current y position (pixels)
+    var dir = DIR_RIGHT;
+
+    for (var i = 0; i < boardTiles.length; i++) {
+      var p = boardTiles[i];
+      var isDouble = p.tile.isDouble();
+      var layout = {
+        placement: p,
+        pixelX: 0,
+        pixelY: 0,
+        widthPx: 0,
+        heightPx: 0,
+        dir: dir,
+        index: i
+      };
+
+      if (dir === DIR_RIGHT || dir === DIR_LEFT) {
+        // Horizontal travel
+        if (isDouble) {
+          // Double: perpendicular — vertical tile (th wide, tw tall)
+          layout.widthPx = th;
+          layout.heightPx = tw;
+          if (dir === DIR_RIGHT) {
+            layout.pixelX = cx;
+            layout.pixelY = cy - (tw - th) / 2; // center vertically
+            cx += th + gap;
+          } else {
+            cx -= (th + gap);
+            layout.pixelX = cx;
+            layout.pixelY = cy - (tw - th) / 2;
+          }
+        } else {
+          // Non-double: horizontal tile (tw wide, th tall)
+          layout.widthPx = tw;
+          layout.heightPx = th;
+          if (dir === DIR_RIGHT) {
+            layout.pixelX = cx;
+            layout.pixelY = cy;
+            cx += tw + gap;
+          } else {
+            cx -= (tw + gap);
+            layout.pixelX = cx;
+            layout.pixelY = cy;
+          }
+        }
       } else {
-        el.appendChild(createHalfElement(tile.low));
-        el.appendChild(createHalfElement(tile.high));
+        // Vertical travel (DIR_DOWN or DIR_UP)
+        if (isDouble) {
+          // Double: perpendicular — horizontal tile (tw wide, th tall)
+          layout.widthPx = tw;
+          layout.heightPx = th;
+          if (dir === DIR_DOWN) {
+            layout.pixelX = cx - (tw - th) / 2;
+            layout.pixelY = cy;
+            cy += th + gap;
+          } else {
+            cy -= (th + gap);
+            layout.pixelX = cx - (tw - th) / 2;
+            layout.pixelY = cy;
+          }
+        } else {
+          // Non-double: vertical tile (th wide, tw tall)
+          layout.widthPx = th;
+          layout.heightPx = tw;
+          if (dir === DIR_DOWN) {
+            layout.pixelX = cx;
+            layout.pixelY = cy;
+            cy += tw + gap;
+          } else {
+            cy -= (tw + gap);
+            layout.pixelX = cx;
+            layout.pixelY = cy;
+          }
+        }
+      }
+
+      layouts.push(layout);
+
+      // Check if we need to turn (only check after placing, before next tile)
+      if (i < boardTiles.length - 1) {
+        if (dir === DIR_RIGHT && cx > maxHorizPx - margin) {
+          // Turn: go down then left
+          // Drop down by a tile-width + some spacing
+          var dropAmount = tw + gap * 4;
+          cy += dropAmount;
+          // cx stays at current position — next tile starts here going left
+          dir = DIR_LEFT;
+        } else if (dir === DIR_LEFT && cx < margin) {
+          // Turn: go down then right
+          var dropAmount = tw + gap * 4;
+          cy += dropAmount;
+          dir = DIR_RIGHT;
+        }
       }
     }
 
-    return el;
+    // Pass 2: compute bounding box and center-offset
+    var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (var i = 0; i < layouts.length; i++) {
+      var l = layouts[i];
+      minX = Math.min(minX, l.pixelX);
+      minY = Math.min(minY, l.pixelY);
+      maxX = Math.max(maxX, l.pixelX + l.widthPx);
+      maxY = Math.max(maxY, l.pixelY + l.heightPx);
+    }
+
+    var chainWidth = maxX - minX;
+    var chainHeight = maxY - minY;
+
+    // Center horizontally, add some top padding
+    var offsetX = Math.max(10, (containerWidthPx - chainWidth) / 2) - minX;
+    var offsetY = 10 - minY;
+
+    for (var i = 0; i < layouts.length; i++) {
+      layouts[i].pixelX += offsetX;
+      layouts[i].pixelY += offsetY;
+    }
+
+    // Store bounds
+    currentBounds = {
+      width: chainWidth + 20,
+      height: chainHeight + 20
+    };
+
+    return layouts;
   }
+
+  // ============================================================
+  // Rendering — Snake Board
+  // ============================================================
 
   function createHalfElement(value) {
     var half = document.createElement('div');
     half.className = 'tile-half';
+    half.setAttribute('data-value', value);
     var positions = PIP_PATTERNS[value] || [];
 
     for (var i = 0; i < 9; i++) {
@@ -1137,25 +1249,152 @@
     return half;
   }
 
+  function createTileElement(tile, isVertical) {
+    var el = document.createElement('div');
+    el.className = 'tile ' + (isVertical ? 'tile--vertical' : 'tile--horizontal');
+
+    var leftVal = isVertical ? tile.high : tile.low;
+    var rightVal = isVertical ? tile.low : tile.high;
+
+    el.appendChild(createHalfElement(leftVal));
+    el.appendChild(createHalfElement(rightVal));
+    return el;
+  }
+
+  /**
+   * Create a board tile element oriented for the snake layout.
+   * The key insight: board.tiles array is ordered LEFT-to-RIGHT.
+   * - For RIGHT travel: normal pip order (same as flat board)
+   * - For LEFT travel: reverse pip halves so connecting face meets neighbor
+   * - For DOWN travel: render as vertical tile, same order
+   * - For UP travel: render as vertical tile, reversed order
+   */
+  function createSnakeBoardTileElement(layout) {
+    var p = layout.placement;
+    var tile = p.tile;
+    var dir = layout.dir;
+    var isDouble = tile.isDouble();
+    var el = document.createElement('div');
+
+    // Determine render orientation
+    var isHorizTravel = (dir === DIR_RIGHT || dir === DIR_LEFT);
+    var useVerticalClass;
+    if (isDouble) {
+      useVerticalClass = isHorizTravel; // perpendicular to horizontal travel
+    } else {
+      useVerticalClass = !isHorizTravel; // non-doubles go vertical during vert travel
+    }
+
+    el.className = 'tile tile--board tile--placed snake-tile ' +
+      (useVerticalClass ? 'tile--vertical' : 'tile--horizontal');
+
+    // Determine pip values for first-child and second-child
+    var firstVal, secondVal;
+
+    if (isDouble) {
+      // Doubles: both halves same value
+      firstVal = tile.high;
+      secondVal = tile.low;
+    } else {
+      // The board.tiles array has correct L-to-R ordering.
+      // placement.flipped tells us how the tile connects:
+      // For flat horizontal L-to-R display:
+      //   flipped=false → low on left, high on right
+      //   flipped=true  → high on left, low on right
+      if (p.flipped) {
+        firstVal = tile.high;
+        secondVal = tile.low;
+      } else {
+        firstVal = tile.low;
+        secondVal = tile.high;
+      }
+
+      // For LEFT or UP travel, the array's L-to-R is physically reversed,
+      // so we need to flip the half order.
+      if (dir === DIR_LEFT || dir === DIR_UP) {
+        var tmp = firstVal;
+        firstVal = secondVal;
+        secondVal = tmp;
+      }
+    }
+
+    el.appendChild(createHalfElement(firstVal));
+    el.appendChild(createHalfElement(secondVal));
+
+    return el;
+  }
+
   function createBackTile() {
     var el = document.createElement('div');
     el.className = 'tile tile--back';
     return el;
   }
 
-  // ============================================================
-  // Render Board — simple horizontal row
-  // ============================================================
-  function renderBoard() {
+  /**
+   * Render the board as a snake/chain layout
+   */
+  function renderSnakeBoard(boardTiles) {
+    // Remove all children except markers (which we re-append)
     els.board.innerHTML = '';
-    var boardTiles = engine.hand.board.tiles;
-    if (boardTiles.length === 0) return;
+    els.board.appendChild(els.boardLeftMarker);
+    els.board.appendChild(els.boardRightMarker);
 
-    for (var i = 0; i < boardTiles.length; i++) {
-      els.board.appendChild(createBoardTileElement(boardTiles[i]));
+    if (boardTiles.length === 0) {
+      els.board.style.width = '100%';
+      els.board.style.height = '100%';
+      currentLayout = [];
+      currentBounds = null;
+      return;
     }
 
-    els.boardArea.scrollLeft = els.boardArea.scrollWidth;
+    var containerWidth = els.boardArea.clientWidth;
+    var layouts = computeSnakeLayout(boardTiles, containerWidth);
+    currentLayout = layouts;
+
+    // Size the board div to fit all tiles
+    if (currentBounds) {
+      els.board.style.width = Math.max(containerWidth, currentBounds.width) + 'px';
+      els.board.style.height = currentBounds.height + 'px';
+    }
+
+    // Create and position each tile
+    for (var i = 0; i < layouts.length; i++) {
+      var layout = layouts[i];
+      var el = createSnakeBoardTileElement(layout);
+      el.style.left = layout.pixelX + 'px';
+      el.style.top = layout.pixelY + 'px';
+      els.board.appendChild(el);
+    }
+
+    // Auto-scroll to show the latest tile
+    scrollToLatestTile(layouts);
+  }
+
+  function scrollToLatestTile(layouts) {
+    if (layouts.length === 0) return;
+
+    var latest = layouts[layouts.length - 1];
+    var areaWidth = els.boardArea.clientWidth;
+    var areaHeight = els.boardArea.clientHeight;
+
+    // Scroll to center on the latest tile
+    var scrollLeft = latest.pixelX - areaWidth / 2 + latest.widthPx / 2;
+    var scrollTop = latest.pixelY - areaHeight / 2 + latest.heightPx / 2;
+
+    els.boardArea.scrollTo({
+      left: Math.max(0, scrollLeft),
+      top: Math.max(0, scrollTop),
+      behavior: 'smooth'
+    });
+  }
+
+  function renderBoard() {
+    var boardTiles = engine.hand.board.tiles;
+    renderSnakeBoard(boardTiles);
+  }
+
+  function renderBoardFromState(board) {
+    renderSnakeBoard(board.tiles);
   }
 
   function renderHumanHand() {
@@ -1163,7 +1402,6 @@
     var tiles = engine.hand.humanHand.tiles;
     var legalMoves = engine.getLegalMoves('human');
 
-    // Find which tiles have legal moves
     var playableTileIds = {};
     for (var i = 0; i < legalMoves.length; i++) {
       playableTileIds[legalMoves[i].tile.id] = true;
@@ -1205,7 +1443,6 @@
   function renderAIHand() {
     els.aiHand.innerHTML = '';
     if (openTiles) {
-      // Show AI tiles face-up
       var tiles = engine.hand.aiHand.tiles;
       for (var i = 0; i < tiles.length; i++) {
         var el = createTileElement(tiles[i], false);
@@ -1216,7 +1453,6 @@
       }
       els.aiTileCount.textContent = '(' + tiles.length + ')';
     } else {
-      // Face-down back tiles
       var count = engine.hand.aiHand.count();
       for (var i = 0; i < count; i++) {
         els.aiHand.appendChild(createBackTile());
@@ -1236,16 +1472,97 @@
     els.aiTileCount.textContent = '(' + tiles.length + ')';
   }
 
+  // ============================================================
+  // End Markers — positioned at snake chain endpoints
+  // ============================================================
+
   function showEndMarkers(moves) {
     var hasLeft = false, hasRight = false;
     for (var i = 0; i < moves.length; i++) {
       if (moves[i].end === 'left') hasLeft = true;
       if (moves[i].end === 'right') hasRight = true;
     }
-    els.boardLeftMarker.style.display = hasLeft ? 'flex' : 'none';
-    els.boardRightMarker.style.display = hasRight ? 'flex' : 'none';
-    if (hasLeft) els.boardLeftMarker.classList.add('glow');
-    if (hasRight) els.boardRightMarker.classList.add('glow');
+
+    if (currentLayout.length === 0) {
+      // Empty board — show markers at center of board area
+      var cx = els.boardArea.clientWidth / 2 - 20;
+      var cy = els.boardArea.clientHeight / 2 - 20;
+      if (hasLeft) {
+        els.boardLeftMarker.style.left = (cx - 50) + 'px';
+        els.boardLeftMarker.style.top = cy + 'px';
+        els.boardLeftMarker.style.display = 'flex';
+        els.boardLeftMarker.classList.add('glow');
+      }
+      if (hasRight) {
+        els.boardRightMarker.style.left = (cx + 50) + 'px';
+        els.boardRightMarker.style.top = cy + 'px';
+        els.boardRightMarker.style.display = 'flex';
+        els.boardRightMarker.classList.add('glow');
+      }
+      return;
+    }
+
+    var first = currentLayout[0];
+    var last = currentLayout[currentLayout.length - 1];
+
+    if (hasLeft) {
+      // Position marker at the open end of the first tile
+      var mx, my;
+      switch (first.dir) {
+        case DIR_RIGHT:
+          mx = first.pixelX - 44;
+          my = first.pixelY + (first.heightPx - 40) / 2;
+          break;
+        case DIR_LEFT:
+          mx = first.pixelX + first.widthPx + 4;
+          my = first.pixelY + (first.heightPx - 40) / 2;
+          break;
+        case DIR_DOWN:
+          mx = first.pixelX + (first.widthPx - 40) / 2;
+          my = first.pixelY - 44;
+          break;
+        case DIR_UP:
+          mx = first.pixelX + (first.widthPx - 40) / 2;
+          my = first.pixelY + first.heightPx + 4;
+          break;
+        default:
+          mx = first.pixelX - 44;
+          my = first.pixelY;
+      }
+      els.boardLeftMarker.style.left = mx + 'px';
+      els.boardLeftMarker.style.top = my + 'px';
+      els.boardLeftMarker.style.display = 'flex';
+      els.boardLeftMarker.classList.add('glow');
+    }
+
+    if (hasRight) {
+      var mx, my;
+      switch (last.dir) {
+        case DIR_RIGHT:
+          mx = last.pixelX + last.widthPx + 4;
+          my = last.pixelY + (last.heightPx - 40) / 2;
+          break;
+        case DIR_LEFT:
+          mx = last.pixelX - 44;
+          my = last.pixelY + (last.heightPx - 40) / 2;
+          break;
+        case DIR_DOWN:
+          mx = last.pixelX + (last.widthPx - 40) / 2;
+          my = last.pixelY + last.heightPx + 4;
+          break;
+        case DIR_UP:
+          mx = last.pixelX + (last.widthPx - 40) / 2;
+          my = last.pixelY - 44;
+          break;
+        default:
+          mx = last.pixelX + last.widthPx + 4;
+          my = last.pixelY;
+      }
+      els.boardRightMarker.style.left = mx + 'px';
+      els.boardRightMarker.style.top = my + 'px';
+      els.boardRightMarker.style.display = 'flex';
+      els.boardRightMarker.classList.add('glow');
+    }
   }
 
   function hideEndMarkers() {
@@ -1256,15 +1573,9 @@
   }
 
   // ============================================================
-  // History Navigation — backward / forward through moves
+  // History Navigation
   // ============================================================
 
-  /**
-   * Reconstruct game state at the given move index.
-   * moveIndex = -1 → before any moves (initial deal, empty board)
-   * moveIndex = 0 → after the first move
-   * moveIndex = N → after move N (0-indexed into moveHistory)
-   */
   function reconstructStateAt(moveIndex) {
     var board = new D.Board();
     var humanTiles = initialHumanTiles.slice();
@@ -1305,7 +1616,6 @@
     if (historyLen === 0) return;
 
     if (viewIndex === -1) {
-      // Currently live — go to one before the last move
       viewIndex = historyLen - 2;
     } else {
       viewIndex--;
@@ -1327,7 +1637,6 @@
 
     if (viewIndex >= historyLen - 1) {
       if (handOver) {
-        // Return to final state and re-show the result overlay
         exitReviewToHandOver();
       } else {
         exitReviewMode();
@@ -1366,7 +1675,6 @@
     updateNavButtons();
     updateUndoButton();
 
-    // Show stored analysis and eval for this move
     if (viewIndex >= 0) {
       var entry = engine.hand.moveHistory[viewIndex];
       if (entry.evalScore !== undefined) {
@@ -1395,7 +1703,6 @@
     renderAIHand();
     updateNavButtons();
 
-    // Restore live eval bar + analysis from last move
     var history = engine.hand.moveHistory;
     if (history.length > 0) {
       var lastEntry = history[history.length - 1];
@@ -1420,12 +1727,10 @@
     isReviewing = false;
     els.statusMessage.classList.remove('reviewing');
 
-    // Restore the final board + revealed hands
     renderBoard();
     renderHumanHand();
     renderAIHandRevealed();
 
-    // Hide nav/undo buttons behind overlay
     els.navBackward.style.display = 'none';
     els.navForward.style.display = 'none';
     els.undoBtn.style.display = 'none';
@@ -1433,7 +1738,6 @@
 
     setStatus('Hand over');
 
-    // Re-show the appropriate overlay
     var matchWinner = engine.checkMatchEnd();
     if (matchWinner) {
       els.matchOverlay.style.display = 'flex';
@@ -1454,14 +1758,12 @@
     els.navBackward.style.display = 'inline-block';
     els.navForward.style.display = 'inline-block';
 
-    // Backward: disabled at initial deal while reviewing, or during AI thinking
     if ((isReviewing && viewIndex <= -1) || isProcessing) {
       els.navBackward.disabled = true;
     } else {
       els.navBackward.disabled = false;
     }
 
-    // Forward: disabled if at live state (not reviewing)
     if (!isReviewing) {
       els.navForward.disabled = true;
     } else {
@@ -1470,18 +1772,6 @@
   }
 
   // --- Read-only render functions for review mode ---
-
-  function renderBoardFromState(board) {
-    els.board.innerHTML = '';
-    var boardTiles = board.tiles;
-    if (boardTiles.length === 0) return;
-
-    for (var i = 0; i < boardTiles.length; i++) {
-      els.board.appendChild(createBoardTileElement(boardTiles[i]));
-    }
-
-    els.boardArea.scrollLeft = els.boardArea.scrollWidth;
-  }
 
   function renderHumanHandFromState(tiles) {
     els.humanHand.innerHTML = '';
@@ -1518,20 +1808,16 @@
   // Eval Bar + Analysis Panel
   // ============================================================
 
-  // Sigmoid-style mapping: raw AI score → 0..100 percentage (AI side)
   function scoreToPercent(score) {
-    // score > 0 means AI advantage, < 0 means human advantage
-    // Use tanh to squash into 0..100 range, centered at 50
-    var k = 0.03; // sensitivity — higher = more responsive to small advantages
+    var k = 0.03;
     var t = Math.tanh(score * k);
-    return 50 + t * 50; // 0 = full human, 100 = full AI
+    return 50 + t * 50;
   }
 
   function updateEvalBar(score) {
     if (!els.evalFill || !els.evalLabel) return;
 
     var aiPercent = scoreToPercent(score);
-    // eval-fill is positioned from the right, representing AI's share
     els.evalFill.style.width = aiPercent + '%';
 
     if (Math.abs(score) < 3) {
