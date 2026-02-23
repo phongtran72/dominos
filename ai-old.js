@@ -12,22 +12,25 @@
   'use strict';
 
   // --- Configurable evaluation weights ---
+  // Allow external injection for tuning: set D._evalWeights before loading
+  var _cfg = (typeof D._evalWeights === 'object' && D._evalWeights) || {};
+
   // Eval function weights (used in evaluate())
-  var W_PIP         = 2;     // pip advantage multiplier
-  var W_MOBILITY    = 4;     // mobility advantage multiplier
-  var W_TILE        = 5;     // tile count advantage multiplier
-  var W_SUIT        = 3;     // suit control at board ends multiplier
-  var W_LOCKIN      = 8;     // bonus when opponent void on one end
-  var W_LOCKIN_BOTH = 15;    // bonus when opponent void on both ends
-  var W_GHOST       = 10;    // ghost 13 pressure value
-  var W_DOUBLE      = 0.5;   // double liability multiplier
+  var W_PIP         = _cfg.W_PIP         !== undefined ? _cfg.W_PIP         : 2;
+  var W_MOBILITY    = _cfg.W_MOBILITY    !== undefined ? _cfg.W_MOBILITY    : 4;
+  var W_TILE        = _cfg.W_TILE        !== undefined ? _cfg.W_TILE        : 5;
+  var W_SUIT        = _cfg.W_SUIT        !== undefined ? _cfg.W_SUIT        : 3;
+  var W_LOCKIN      = _cfg.W_LOCKIN      !== undefined ? _cfg.W_LOCKIN      : 8;
+  var W_LOCKIN_BOTH = _cfg.W_LOCKIN_BOTH !== undefined ? _cfg.W_LOCKIN_BOTH : 15;
+  var W_GHOST       = _cfg.W_GHOST       !== undefined ? _cfg.W_GHOST       : 10;
+  var W_DOUBLE      = _cfg.W_DOUBLE      !== undefined ? _cfg.W_DOUBLE      : 0.5;
 
   // Move ordering weights (used in orderMoves())
-  var MO_DOMINO     = 1000;  // last-tile domino bonus
-  var MO_DOUBLE     = 12;    // doubles disposal priority
-  var MO_PIP_MULT   = 1.5;   // high-pip shedding multiplier
-  var MO_FORCE_PASS = 25;    // forces opponent pass bonus
-  var MO_GHOST      = 15;    // ghost 13 exploitation bonus
+  var MO_DOMINO     = _cfg.MO_DOMINO     !== undefined ? _cfg.MO_DOMINO     : 1000;
+  var MO_DOUBLE     = _cfg.MO_DOUBLE     !== undefined ? _cfg.MO_DOUBLE     : 12;
+  var MO_PIP_MULT   = _cfg.MO_PIP_MULT   !== undefined ? _cfg.MO_PIP_MULT   : 1.5;
+  var MO_FORCE_PASS = _cfg.MO_FORCE_PASS !== undefined ? _cfg.MO_FORCE_PASS : 25;
+  var MO_GHOST      = _cfg.MO_GHOST      !== undefined ? _cfg.MO_GHOST      : 15;
 
   // --- Zobrist hashing setup ---
   // Seeded xorshift32 PRNG for deterministic hash values
@@ -806,7 +809,7 @@
       var numMoves = rootMoves.length / 2;
 
       var bestMove = legalMoves[0];
-      var TIME_BUDGET = 2000; // milliseconds
+      var TIME_BUDGET = _cfg.TIME_BUDGET !== undefined ? _cfg.TIME_BUDGET : 2000; // milliseconds
       var startTime = Date.now();
       var prevScore = 0; // for aspiration windows
       var lastDepth = 0;

@@ -38,6 +38,10 @@
   var handResult = null;         // cached result for re-showing overlay
   var lastAIAnalysis = null;     // { bestScore, depth, nodes, analysis }
 
+  // --- Early Solve (precompute AI move at deal time) ---
+  var precomputedAIResult = null; // Cached worker result from deal-time dispatch
+  var precomputeValid = false;    // Whether cached result is still usable
+
   // --- Deal Save/Replay System ---
   var SAVE_KEY = 'dominos-deals';
   var matchDeals = [];         // accumulates {leader, humanTiles, aiTiles} per hand during match
@@ -271,6 +275,14 @@
     els.matchTitle = document.getElementById('match-title');
     els.matchBody = document.getElementById('match-body');
 
+    els.analyzeHandBtn = document.getElementById('analyze-hand-btn');
+    els.analyzeMatchBtn = document.getElementById('analyze-match-btn');
+    els.analysisProgress = document.getElementById('analysis-progress');
+    els.analysisProgressText = document.getElementById('analysis-progress-text');
+    els.analysisProgressFill = document.getElementById('analysis-progress-fill');
+    els.analysisCancelBtn = document.getElementById('analysis-cancel-btn');
+    els.analysisSummary = document.getElementById('analysis-summary');
+
     els.savedDeals = document.getElementById('saved-deals');
     els.savedDealsList = document.getElementById('saved-deals-list');
     els.saveOverlay = document.getElementById('save-overlay');
@@ -377,6 +389,11 @@
     document.getElementById('review-hand-btn').addEventListener('click', onReviewHand);
     document.getElementById('review-match-btn').addEventListener('click', onReviewMatch);
 
+    // Analyze buttons
+    if (els.analyzeHandBtn) els.analyzeHandBtn.addEventListener('click', startAnalysis);
+    if (els.analyzeMatchBtn) els.analyzeMatchBtn.addEventListener('click', startAnalysis);
+    if (els.analysisCancelBtn) els.analysisCancelBtn.addEventListener('click', cancelAnalysis);
+
     // Play again (next-hand-btn onclick is set dynamically in showHandResult)
     document.getElementById('play-again-btn').addEventListener('click', onPlayAgain);
     document.getElementById('new-game-btn').addEventListener('click', onNewGame);
@@ -470,6 +487,7 @@
     if (leader === 'human') {
       startHumanTurn();
     } else {
+      precomputeAIMove(); // Start worker immediately — don't wait for 500ms delay
       setStatus('AI is thinking...');
       disableHumanHand();
       setTimeout(function () { executeAITurn(); }, 500);
@@ -522,6 +540,8 @@
     selectedTile = null;
     selectedMoves = [];
     lastAIAnalysis = null;
+    precomputedAIResult = null;
+    precomputeValid = false;
 
     // Re-render everything
     renderBoard();
@@ -730,12 +750,16 @@
       return;
     }
 
-    // AI's turn
+    // AI's turn — dispatch worker immediately (no 500ms delay)
     setStatus('AI is thinking...');
     disableHumanHand();
     updateNavButtons();
     els.undoBtn.style.display = 'none';
-    setTimeout(function () { executeAITurn(); }, 500);
+    if (difficulty === 'hard' && aiWorker && selectedEngine === 'new') {
+      executeAITurn();
+    } else {
+      setTimeout(function () { executeAITurn(); }, 500);
+    }
   }
 
   function onPassClicked() {
@@ -753,7 +777,11 @@
 
     setStatus('AI is thinking...');
     disableHumanHand();
-    setTimeout(function () { executeAITurn(); }, 500);
+    if (difficulty === 'hard' && aiWorker && selectedEngine === 'new') {
+      executeAITurn();
+    } else {
+      setTimeout(function () { executeAITurn(); }, 500);
+    }
   }
 
   function applyAIMove(move, elapsed) {
@@ -878,6 +906,60 @@
     setTimeout(onAnimComplete, 700);
   }
 
+  // --- Early Solve: dispatch worker immediately at deal time ---
+  function precomputeAIMove() {
+    if (difficulty !== 'hard' || !aiWorker || selectedEngine !== 'new') return;
+
+    precomputedAIResult = null;
+    precomputeValid = true;
+
+    var legalMoves = engine.getLegalMoves('ai');
+    if (legalMoves.length === 0) return; // AI will pass — no precompute needed
+    if (legalMoves.length === 1) {
+      // Trivial: only one legal move
+      precomputedAIResult = {
+        tileId: legalMoves[0].tile.id, end: legalMoves[0].end,
+        bestScore: 0, depth: 0, nodes: 0, analysis: []
+      };
+      return;
+    }
+
+    // Build worker message (same serialization as executeAITurn)
+    var hand = engine.hand;
+    var board = hand.board;
+    var msg = {
+      aiTiles: hand.aiHand.tiles.map(function (t) { return { low: t.low, high: t.high }; }),
+      humanTiles: hand.humanHand.tiles.map(function (t) { return { low: t.low, high: t.high }; }),
+      left: board.isEmpty() ? null : board.leftEnd,
+      right: board.isEmpty() ? null : board.rightEnd,
+      boardEmpty: board.isEmpty(),
+      moveHistory: hand.moveHistory.map(function (m) {
+        return {
+          player: m.player,
+          tileLow: m.tile ? m.tile.low : null,
+          tileHigh: m.tile ? m.tile.high : null,
+          end: m.end,
+          pass: !!m.pass,
+          boardLeft: m.boardEnds ? m.boardEnds.left : null,
+          boardRight: m.boardEnds ? m.boardEnds.right : null
+        };
+      }),
+      legalMoves: legalMoves.map(function (m) {
+        return { tileLow: m.tile.low, tileHigh: m.tile.high, end: m.end };
+      })
+    };
+
+    aiWorker.onmessage = function (e) {
+      if (precomputeValid) {
+        precomputedAIResult = e.data;
+      }
+    };
+    aiWorker.onerror = function () {
+      precomputeValid = false; // Fall back to sync in executeAITurn
+    };
+    aiWorker.postMessage(msg);
+  }
+
   function executeAITurn() {
     var legalMoves = engine.getLegalMoves('ai');
 
@@ -901,6 +983,78 @@
     // Hard mode with Web Worker available → async off-main-thread (bitboard engine only)
     if (difficulty === 'hard' && aiWorker && selectedEngine === 'new') {
       var t0 = Date.now();
+
+      // Check for precomputed result from deal-time early solve
+      if (precomputedAIResult && precomputeValid) {
+        var result = precomputedAIResult;
+        precomputedAIResult = null;
+        precomputeValid = false;
+
+        lastAIAnalysis = {
+          bestScore: result.bestScore || 0,
+          depth: result.depth || 0,
+          nodes: result.nodes || 0,
+          analysis: result.analysis || []
+        };
+
+        var move = null;
+        for (var i = 0; i < legalMoves.length; i++) {
+          if (legalMoves[i].tile.id === result.tileId && legalMoves[i].end === result.end) {
+            move = legalMoves[i]; break;
+          }
+        }
+        if (!move) {
+          for (var i = 0; i < legalMoves.length; i++) {
+            if (legalMoves[i].tile.id === result.tileId) { move = legalMoves[i]; break; }
+          }
+        }
+        if (!move) move = legalMoves[0];
+
+        applyAIMove(move, Date.now() - t0);
+        return;
+      }
+
+      // If precompute is pending (worker still computing), wait for it
+      if (precomputeValid && !precomputedAIResult) {
+        aiWorker.onmessage = function (e) {
+          var elapsed = Date.now() - t0;
+          var result = e.data;
+          precomputedAIResult = null;
+          precomputeValid = false;
+
+          lastAIAnalysis = {
+            bestScore: result.bestScore || 0,
+            depth: result.depth || 0,
+            nodes: result.nodes || 0,
+            analysis: result.analysis || []
+          };
+
+          var move = null;
+          for (var i = 0; i < legalMoves.length; i++) {
+            if (legalMoves[i].tile.id === result.tileId && legalMoves[i].end === result.end) {
+              move = legalMoves[i]; break;
+            }
+          }
+          if (!move) {
+            for (var i = 0; i < legalMoves.length; i++) {
+              if (legalMoves[i].tile.id === result.tileId) { move = legalMoves[i]; break; }
+            }
+          }
+          if (!move) move = legalMoves[0];
+
+          applyAIMove(move, elapsed);
+        };
+        aiWorker.onerror = function () {
+          precomputeValid = false;
+          var aiResult = ai.chooseMove(legalMoves, engine);
+          lastAIAnalysis = { bestScore: aiResult.bestScore, depth: aiResult.depth, nodes: aiResult.nodes, analysis: aiResult.analysis };
+          applyAIMove(aiResult.move, Date.now() - t0);
+        };
+        return;
+      }
+
+      // No precompute — dispatch normally
+      precomputeValid = false;
 
       // Serialize state for the worker
       var hand = engine.hand;
@@ -1031,6 +1185,13 @@
 
     els.resultTitle.textContent = title;
     els.resultBody.innerHTML = body;
+    els.analysisSummary.style.display = 'none';
+    els.analysisSummary.innerHTML = '';
+    els.analysisProgress.style.display = 'none';
+
+    // Show Analyze button only for hard+worker+new engine
+    var canAnalyze = difficulty === 'hard' && selectedEngine === 'new';
+    if (els.analyzeHandBtn) els.analyzeHandBtn.style.display = canAnalyze ? '' : 'none';
 
     // Check if match is over
     var matchWinner = engine.checkMatchEnd();
@@ -1071,6 +1232,9 @@
       '<div style="text-align:center;font-size:1.4rem;font-weight:700;color:#f0d060;">You: ' +
       engine.matchScore.human + ' &mdash; AI: ' + engine.matchScore.ai + '</div>' +
       '<div style="text-align:center;margin-top:8px;opacity:0.7;">Hands played: ' + engine.handNumber + '</div>';
+    // Show Analyze button only for hard+worker+new engine
+    var canAnalyze = difficulty === 'hard' && selectedEngine === 'new';
+    if (els.analyzeMatchBtn) els.analyzeMatchBtn.style.display = canAnalyze ? '' : 'none';
     els.matchOverlay.style.display = 'flex';
   }
 
@@ -1105,6 +1269,383 @@
     els.postSaveOverlay.style.display = 'none';
     els.startOverlay.style.display = 'flex';
     renderSavedDeals();
+  }
+
+  // ---- Post-Game Analysis ----
+
+  var analysisResults = null;      // Array of per-move analysis results
+  var analysisInProgress = false;  // True while analyzing
+  var analysisMoveIndex = 0;       // Current move being analyzed
+  var analysisAborted = false;     // User clicked Cancel
+  var analysisGameData = null;     // Cached game data for analysis
+
+  function classifyMove(scoreDiff) {
+    if (scoreDiff === 0)  return { grade: 'Perfect',     symbol: '\u2713' };
+    if (scoreDiff <= 4)   return { grade: 'Good',         symbol: '~' };
+    if (scoreDiff <= 14)  return { grade: 'Inaccuracy',   symbol: '?!' };
+    if (scoreDiff <= 29)  return { grade: 'Mistake',      symbol: '?' };
+    return                         { grade: 'Blunder',      symbol: '??' };
+  }
+
+  function findActualMoveScore(analysis, tileId, end) {
+    for (var i = 0; i < analysis.length; i++) {
+      if (analysis[i].tileId === tileId && analysis[i].end === end) return analysis[i].score;
+    }
+    for (var i = 0; i < analysis.length; i++) {
+      if (analysis[i].tileId === tileId) return analysis[i].score;
+    }
+    return null;
+  }
+
+  // Swap engine perspective so AI searches from human's viewpoint
+  function createSwappedProxy(eng) {
+    var proxy = Object.create(eng);
+    Object.defineProperty(proxy, 'hand', {
+      get: function () {
+        var realHand = eng.hand;
+        return {
+          aiHand: realHand.humanHand,
+          humanHand: realHand.aiHand,
+          board: realHand.board,
+          currentPlayer: realHand.currentPlayer,
+          consecutivePasses: realHand.consecutivePasses,
+          lastPlacer: realHand.lastPlacer,
+          moveHistory: realHand.moveHistory.map(function (m) {
+            return {
+              player: m.player === 'ai' ? 'human' : 'ai',
+              tile: m.tile, end: m.end, pass: m.pass, boardEnds: m.boardEnds
+            };
+          }),
+          opponentPassedValues: {
+            human: realHand.opponentPassedValues ? realHand.opponentPassedValues.ai : undefined,
+            ai: realHand.opponentPassedValues ? realHand.opponentPassedValues.human : undefined
+          }
+        };
+      }
+    });
+    return proxy;
+  }
+
+  function startAnalysis() {
+    if (analysisInProgress) return;
+
+    analysisInProgress = true;
+    analysisAborted = false;
+    precomputedAIResult = null;
+    precomputeValid = false;
+
+    // Build game data from current hand state
+    var dealInfo = matchDeals[matchDeals.length - 1];
+    analysisGameData = {
+      leader: dealInfo.leader,
+      humanTiles: initialHumanTiles.map(function (t) { return { low: t.low, high: t.high }; }),
+      aiTiles: initialAITiles.map(function (t) { return { low: t.low, high: t.high }; }),
+      moves: engine.hand.moveHistory.map(function (m) {
+        return {
+          player: m.player,
+          tile: m.tile ? { low: m.tile.low, high: m.tile.high } : null,
+          end: m.end,
+          pass: !!m.pass
+        };
+      })
+    };
+
+    analysisResults = [];
+    analysisMoveIndex = 0;
+
+    // Hide overlay buttons, show progress
+    document.getElementById('review-hand-btn').style.display = 'none';
+    if (els.analyzeHandBtn) els.analyzeHandBtn.style.display = 'none';
+    if (els.analyzeMatchBtn) els.analyzeMatchBtn.style.display = 'none';
+    els.saveHandBtn.style.display = 'none';
+    document.getElementById('next-hand-btn').style.display = 'none';
+    // Also hide match overlay buttons if analysis started from there
+    var playAgainBtn = document.getElementById('play-again-btn');
+    var newGameBtn = document.getElementById('new-game-btn');
+    var reviewMatchBtn = document.getElementById('review-match-btn');
+    if (els.matchOverlay.style.display !== 'none') {
+      if (playAgainBtn) playAgainBtn.style.display = 'none';
+      if (newGameBtn) newGameBtn.style.display = 'none';
+      if (reviewMatchBtn) reviewMatchBtn.style.display = 'none';
+    }
+
+    els.analysisSummary.style.display = 'none';
+    els.analysisProgress.style.display = 'block';
+    els.analysisProgressFill.style.width = '0%';
+
+    analyzeNextMove();
+  }
+
+  function analyzeNextMove() {
+    if (analysisAborted) {
+      onAnalysisComplete(true);
+      return;
+    }
+
+    var totalMoves = analysisGameData.moves.length;
+    if (analysisMoveIndex >= totalMoves) {
+      onAnalysisComplete(false);
+      return;
+    }
+
+    var move = analysisGameData.moves[analysisMoveIndex];
+    var pct = Math.round(100 * analysisMoveIndex / totalMoves);
+    els.analysisProgressText.textContent = 'Analyzing move ' + (analysisMoveIndex + 1) + '/' + totalMoves + '...';
+    els.analysisProgressFill.style.width = pct + '%';
+
+    // Skip passes — forced, no choice
+    if (move.pass) {
+      analysisResults.push({
+        moveNum: analysisMoveIndex + 1, player: move.player,
+        forced: true, scoreDiff: 0, grade: 'Perfect', symbol: '\u2713'
+      });
+      analysisMoveIndex++;
+      setTimeout(analyzeNextMove, 0);
+      return;
+    }
+
+    // Reconstruct position at this move index
+    var analysisEngine = new D.GameEngine();
+    analysisEngine.newMatch('hard');
+    analysisEngine.dealHandFromTiles(
+      analysisGameData.leader,
+      analysisGameData.humanTiles,
+      analysisGameData.aiTiles
+    );
+
+    // Replay moves 0..analysisMoveIndex-1
+    for (var i = 0; i < analysisMoveIndex; i++) {
+      var m = analysisGameData.moves[i];
+      if (m.pass) {
+        analysisEngine.pass(m.player);
+      } else {
+        var tId = Math.min(m.tile.low, m.tile.high) + '-' + Math.max(m.tile.low, m.tile.high);
+        var hand = analysisEngine.getHand(m.player);
+        var tile = hand.findById(tId);
+        if (tile) analysisEngine.playTile(m.player, tile, m.end);
+      }
+    }
+
+    var currentPlayer = analysisEngine.hand.currentPlayer;
+    var legalMoves = analysisEngine.getLegalMoves(currentPlayer);
+
+    // Skip forced moves (0 or 1 legal move)
+    if (legalMoves.length <= 1) {
+      var tileStr = '[' + move.tile.low + '|' + move.tile.high + ']';
+      analysisResults.push({
+        moveNum: analysisMoveIndex + 1, player: move.player,
+        forced: true, scoreDiff: 0, grade: 'Perfect', symbol: '\u2713',
+        tileStr: tileStr
+      });
+      analysisMoveIndex++;
+      setTimeout(analyzeNextMove, 0);
+      return;
+    }
+
+    var isHumanMove = (currentPlayer === 'human');
+    var capturedIndex = analysisMoveIndex;
+
+    // Helper: process AI result into analysis entry
+    function processAnalysisResult(bestTileId, bestEnd, bestScore, analysis, depth, nodes) {
+      var actualTileId = Math.min(move.tile.low, move.tile.high) + '-' + Math.max(move.tile.low, move.tile.high);
+      var actualScore = findActualMoveScore(analysis, actualTileId, move.end);
+      var scoreDiff = 0;
+      if (actualScore !== null) {
+        scoreDiff = bestScore - actualScore;
+        if (scoreDiff < 0) scoreDiff = 0;
+      }
+
+      var classification = classifyMove(scoreDiff);
+
+      var resultEntry = {
+        moveNum: capturedIndex + 1,
+        player: move.player,
+        forced: false,
+        scoreDiff: scoreDiff,
+        grade: classification.grade,
+        symbol: classification.symbol,
+        bestTileId: bestTileId,
+        bestEnd: bestEnd,
+        bestScore: bestScore,
+        actualScore: actualScore,
+        actualTileId: actualTileId,
+        actualEnd: move.end,
+        analysis: analysis,
+        depth: depth,
+        nodes: nodes
+      };
+
+      analysisResults.push(resultEntry);
+
+      if (engine.hand.moveHistory[capturedIndex]) {
+        engine.hand.moveHistory[capturedIndex].deepAnalysis = resultEntry;
+      }
+
+      analysisMoveIndex++;
+      setTimeout(analyzeNextMove, 50);
+    }
+
+    // Path A: Use Web Worker (async, with 30s budget)
+    if (aiWorker) {
+      var aHand = analysisEngine.hand;
+      var aBoard = aHand.board;
+
+      var msg = {
+        timeBudget: 30000,
+        aiTiles: (isHumanMove ? aHand.humanHand : aHand.aiHand).tiles.map(function (t) { return { low: t.low, high: t.high }; }),
+        humanTiles: (isHumanMove ? aHand.aiHand : aHand.humanHand).tiles.map(function (t) { return { low: t.low, high: t.high }; }),
+        left: aBoard.isEmpty() ? null : aBoard.leftEnd,
+        right: aBoard.isEmpty() ? null : aBoard.rightEnd,
+        boardEmpty: aBoard.isEmpty(),
+        moveHistory: aHand.moveHistory.map(function (m) {
+          var player = isHumanMove ? (m.player === 'ai' ? 'human' : 'ai') : m.player;
+          return {
+            player: player,
+            tileLow: m.tile ? m.tile.low : null,
+            tileHigh: m.tile ? m.tile.high : null,
+            end: m.end,
+            pass: !!m.pass,
+            boardLeft: m.boardEnds ? m.boardEnds.left : null,
+            boardRight: m.boardEnds ? m.boardEnds.right : null
+          };
+        }),
+        legalMoves: legalMoves.map(function (m) {
+          return { tileLow: m.tile.low, tileHigh: m.tile.high, end: m.end };
+        })
+      };
+
+      aiWorker.onmessage = function (e) {
+        if (analysisAborted) { onAnalysisComplete(true); return; }
+        var result = e.data;
+        processAnalysisResult(
+          result.tileId, result.end,
+          result.bestScore || 0, result.analysis || [],
+          result.depth || 0, result.nodes || 0
+        );
+      };
+      aiWorker.onerror = function () {
+        analysisResults.push({
+          moveNum: capturedIndex + 1, player: move.player,
+          forced: false, scoreDiff: 0, grade: 'Error', symbol: '!', error: true
+        });
+        analysisMoveIndex++;
+        setTimeout(analyzeNextMove, 50);
+      };
+      aiWorker.postMessage(msg);
+
+    // Path B: Synchronous fallback (no worker — file:// protocol)
+    } else {
+      // Use setTimeout to let UI update before blocking search
+      setTimeout(function () {
+        if (analysisAborted) { onAnalysisComplete(true); return; }
+
+        var engineForSearch = isHumanMove ? createSwappedProxy(analysisEngine) : analysisEngine;
+        var aiResult = ai.chooseMove(legalMoves, engineForSearch);
+
+        var bestMove = aiResult.move;
+        var bestTileId = bestMove.tile ? bestMove.tile.id : (Math.min(bestMove.tile.low, bestMove.tile.high) + '-' + Math.max(bestMove.tile.low, bestMove.tile.high));
+        var bestEnd = bestMove.end;
+
+        processAnalysisResult(
+          bestTileId, bestEnd,
+          aiResult.bestScore || 0, aiResult.analysis || [],
+          aiResult.depth || 0, aiResult.nodes || 0
+        );
+      }, 50);
+    }
+  }
+
+  function cancelAnalysis() {
+    analysisAborted = true;
+    analysisInProgress = false;
+    restoreOverlayButtons();
+    els.analysisProgress.style.display = 'none';
+  }
+
+  function restoreOverlayButtons() {
+    document.getElementById('review-hand-btn').style.display = '';
+    document.getElementById('next-hand-btn').style.display = '';
+    var canAnalyze = difficulty === 'hard' && selectedEngine === 'new';
+    if (els.analyzeHandBtn) els.analyzeHandBtn.style.display = canAnalyze ? '' : 'none';
+    // Restore match overlay buttons too
+    var playAgainBtn = document.getElementById('play-again-btn');
+    var newGameBtn = document.getElementById('new-game-btn');
+    var reviewMatchBtn = document.getElementById('review-match-btn');
+    if (playAgainBtn) playAgainBtn.style.display = '';
+    if (newGameBtn) newGameBtn.style.display = '';
+    if (reviewMatchBtn) reviewMatchBtn.style.display = '';
+    if (els.analyzeMatchBtn) els.analyzeMatchBtn.style.display = canAnalyze ? '' : 'none';
+  }
+
+  function onAnalysisComplete(aborted) {
+    analysisInProgress = false;
+    els.analysisProgress.style.display = 'none';
+    els.analysisProgressFill.style.width = '100%';
+
+    if (aborted) {
+      restoreOverlayButtons();
+      return;
+    }
+
+    // Build summary
+    var humanStats = { total: 0, perfect: 0, good: 0, inaccuracy: 0, mistake: 0, blunder: 0 };
+    var aiStats    = { total: 0, perfect: 0, good: 0, inaccuracy: 0, mistake: 0, blunder: 0 };
+    var criticalMoments = [];
+
+    for (var i = 0; i < analysisResults.length; i++) {
+      var r = analysisResults[i];
+      if (r.error) continue;
+      var stats = r.player === 'human' ? humanStats : aiStats;
+      if (!r.forced || r.grade === 'Perfect') {
+        stats.total++;
+        switch (r.grade) {
+          case 'Perfect':    stats.perfect++;    break;
+          case 'Good':       stats.good++;       break;
+          case 'Inaccuracy': stats.inaccuracy++; break;
+          case 'Mistake':    stats.mistake++;    break;
+          case 'Blunder':    stats.blunder++;    break;
+        }
+      }
+      if (!r.forced && r.scoreDiff >= 5) {
+        criticalMoments.push(r);
+      }
+    }
+
+    var html = '<div class="analysis-summary-line" style="font-weight:700;margin-bottom:6px;">Analysis Complete</div>';
+
+    var hAcc = humanStats.total > 0 ? Math.round(100 * humanStats.perfect / humanStats.total) : 'N/A';
+    html += '<div class="analysis-summary-line">You: <span class="grade-perfect">' + hAcc + '% accuracy</span> (' + humanStats.perfect + '/' + humanStats.total + ' perfect';
+    if (humanStats.good > 0) html += ', ' + humanStats.good + ' good';
+    if (humanStats.inaccuracy > 0) html += ', ' + humanStats.inaccuracy + ' inaccuracy';
+    if (humanStats.mistake > 0) html += ', ' + humanStats.mistake + ' mistake';
+    if (humanStats.blunder > 0) html += ', ' + humanStats.blunder + ' blunder';
+    html += ')</div>';
+
+    var aAcc = aiStats.total > 0 ? Math.round(100 * aiStats.perfect / aiStats.total) : 'N/A';
+    html += '<div class="analysis-summary-line">AI: <span class="grade-perfect">' + aAcc + '% accuracy</span> (' + aiStats.perfect + '/' + aiStats.total + ' perfect';
+    if (aiStats.good > 0) html += ', ' + aiStats.good + ' good';
+    if (aiStats.inaccuracy > 0) html += ', ' + aiStats.inaccuracy + ' inaccuracy';
+    if (aiStats.mistake > 0) html += ', ' + aiStats.mistake + ' mistake';
+    if (aiStats.blunder > 0) html += ', ' + aiStats.blunder + ' blunder';
+    html += ')</div>';
+
+    if (criticalMoments.length > 0) {
+      html += '<div class="analysis-summary-line" style="margin-top:6px;font-weight:600;">Critical moments:</div>';
+      for (var c = 0; c < criticalMoments.length; c++) {
+        var cm = criticalMoments[c];
+        var who = cm.player === 'human' ? 'You' : 'AI';
+        html += '<div class="analysis-critical">Move ' + cm.moveNum + ': ' + who +
+          ' played [' + cm.actualTileId.replace('-', '|') + ']' + cm.actualEnd[0].toUpperCase() +
+          ' instead of [' + cm.bestTileId.replace('-', '|') + ']' + cm.bestEnd[0].toUpperCase() +
+          ' (+' + cm.scoreDiff + ', ' + cm.grade + ')</div>';
+      }
+    }
+
+    els.analysisSummary.innerHTML = html;
+    els.analysisSummary.style.display = 'block';
+
+    // Restore buttons
+    restoreOverlayButtons();
   }
 
   function onReviewHand() {
@@ -1388,18 +1929,32 @@
     renderAIHandFromState(state.aiTiles);
 
     var historyLen = engine.hand.moveHistory.length;
+    var statusText = '';
     if (viewIndex === -1) {
-      setStatus('Reviewing: Initial deal');
+      statusText = 'Reviewing: Initial deal';
     } else {
       var move = engine.hand.moveHistory[viewIndex];
       var who = move.player === 'human' ? 'You' : 'AI';
       if (move.pass) {
-        setStatus('Move ' + (viewIndex + 1) + '/' + historyLen + ': ' + who + ' passed');
+        statusText = 'Move ' + (viewIndex + 1) + '/' + historyLen + ': ' + who + ' passed';
       } else {
-        setStatus('Move ' + (viewIndex + 1) + '/' + historyLen + ': ' + who + ' played ' + move.tile.toString());
+        statusText = 'Move ' + (viewIndex + 1) + '/' + historyLen + ': ' + who + ' played ' + move.tile.toString();
+      }
+
+      // Append deep analysis grade if available
+      if (move.deepAnalysis && !move.pass) {
+        var da = move.deepAnalysis;
+        var gradeClass = 'grade-' + da.grade.toLowerCase();
+        var gradeText = da.symbol + ' ' + da.grade;
+        if (da.scoreDiff > 0 && da.bestTileId) {
+          gradeText += ' (best: [' + da.bestTileId.replace('-', '|') + ']' +
+                       da.bestEnd[0].toUpperCase() + ', +' + da.scoreDiff + ')';
+        }
+        statusText += ' \u2014 <span class="' + gradeClass + '">' + gradeText + '</span>';
       }
     }
 
+    els.statusMessage.innerHTML = statusText;
     els.statusMessage.classList.add('reviewing');
     els.passBtn.style.display = 'none';
     hideEndMarkers();
@@ -1412,7 +1967,12 @@
       if (entry.evalScore !== undefined) {
         updateEvalBar(entry.evalScore);
       }
-      if (entry.analysis && entry.analysis.length > 0) {
+      // Deep analysis takes priority over real-time analysis
+      if (entry.deepAnalysis && entry.deepAnalysis.analysis && entry.deepAnalysis.analysis.length > 0) {
+        var chosenId = entry.deepAnalysis.actualTileId || (entry.tile ? entry.tile.id : null);
+        var chosenEnd = entry.end || null;
+        renderAnalysis(entry.deepAnalysis.analysis, chosenId, chosenEnd);
+      } else if (entry.analysis && entry.analysis.length > 0) {
         var chosenId = entry.tile ? entry.tile.id : null;
         var chosenEnd = entry.end || null;
         renderAnalysis(entry.analysis, chosenId, chosenEnd);

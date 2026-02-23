@@ -150,8 +150,17 @@
     <div class="modal">
       <h2 id="result-title">Hand Over</h2>
       <div id="result-body"></div>
+      <div id="analysis-summary" style="display:none;"></div>
+      <div id="analysis-progress" style="display:none;">
+        <div id="analysis-progress-text">Analyzing move 1/24...</div>
+        <div id="analysis-progress-bar-container">
+          <div id="analysis-progress-fill"></div>
+        </div>
+        <button id="analysis-cancel-btn" class="btn btn-secondary">Cancel</button>
+      </div>
       <div class="modal-buttons">
         <button id="review-hand-btn" class="btn btn-secondary">Review Moves</button>
+        <button id="analyze-hand-btn" class="btn btn-secondary" style="display:none;">Analyze</button>
         <button id="save-hand-btn" class="btn btn-secondary" style="display:none;">Save</button>
         <button id="next-hand-btn" class="btn btn-primary">Next Hand</button>
       </div>
@@ -165,6 +174,7 @@
       <div id="match-body"></div>
       <div class="modal-buttons">
         <button id="review-match-btn" class="btn btn-secondary">Review Moves</button>
+        <button id="analyze-match-btn" class="btn btn-secondary" style="display:none;">Analyze</button>
         <button id="play-again-btn" class="btn btn-primary">Play Again</button>
         <button id="new-game-btn" class="btn btn-secondary">New Game</button>
       </div>

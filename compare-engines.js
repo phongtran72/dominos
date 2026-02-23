@@ -38,7 +38,7 @@ var oldNamespace = {};
 // --- Load NEW AI (bitboard) ---
 require('./ai.js');
 
-var OldAI = oldNamespace.AIPlayer;
+var OldAI = oldNamespace.OldAIPlayer;
 var NewAI = D.AIPlayer;
 
 // --- Seeded PRNG for reproducible games ---
@@ -117,22 +117,23 @@ function playHand(engine, aiRolePlayer, humanRolePlayer, leader) {
       continue;
     }
 
-    var move;
+    var moveResult;
     if (currentPlayer === 'ai') {
       // AI role player sees the real engine (aiHand = their hand)
-      move = aiRolePlayer.chooseMove(legalMoves, engine);
+      moveResult = aiRolePlayer.chooseMove(legalMoves, engine);
     } else {
       // Human role player sees swapped engine (aiHand = humanHand)
-      move = humanRolePlayer.chooseMove(legalMoves, swappedEngine);
+      moveResult = humanRolePlayer.chooseMove(legalMoves, swappedEngine);
     }
 
-    if (!move) move = legalMoves[0];
+    // chooseMove returns { move: {tile, end}, bestScore, ... }
+    var move = (moveResult && moveResult.move) ? moveResult.move : legalMoves[0];
 
     var result = engine.playTile(currentPlayer, move.tile, move.end);
 
     if (result.error) {
       console.error('ERROR: ' + result.error + ' player=' + currentPlayer +
-                     ' tile=' + move.tile.toString() + ' end=' + move.end);
+                     ' tile=' + (move.tile ? move.tile.toString() : '?') + ' end=' + move.end);
       return null;
     }
 

@@ -92,22 +92,25 @@ function popcount(x) {
 
 // =====================================================================
 // EVALUATION WEIGHTS
+// Allow external injection for tuning: set EVAL_WEIGHTS before loading
 // =====================================================================
 
-var W_PIP         = 2;
-var W_MOBILITY    = 4;
-var W_TILE        = 5;
-var W_SUIT        = 3;
-var W_LOCKIN      = 8;
-var W_LOCKIN_BOTH = 15;
-var W_GHOST       = 10;
-var W_DOUBLE      = 0.5;
+var _cfg = (typeof EVAL_WEIGHTS === 'object' && EVAL_WEIGHTS) || {};
 
-var MO_DOMINO     = 1000;
-var MO_DOUBLE     = 12;
-var MO_PIP_MULT   = 1.5;
-var MO_FORCE_PASS = 25;
-var MO_GHOST      = 15;
+var W_PIP         = _cfg.W_PIP         !== undefined ? _cfg.W_PIP         : 2;
+var W_MOBILITY    = _cfg.W_MOBILITY    !== undefined ? _cfg.W_MOBILITY    : 4;
+var W_TILE        = _cfg.W_TILE        !== undefined ? _cfg.W_TILE        : 5;
+var W_SUIT        = _cfg.W_SUIT        !== undefined ? _cfg.W_SUIT        : 3;
+var W_LOCKIN      = _cfg.W_LOCKIN      !== undefined ? _cfg.W_LOCKIN      : 8;
+var W_LOCKIN_BOTH = _cfg.W_LOCKIN_BOTH !== undefined ? _cfg.W_LOCKIN_BOTH : 15;
+var W_GHOST       = _cfg.W_GHOST       !== undefined ? _cfg.W_GHOST       : 10;
+var W_DOUBLE      = _cfg.W_DOUBLE      !== undefined ? _cfg.W_DOUBLE      : 0.5;
+
+var MO_DOMINO     = _cfg.MO_DOMINO     !== undefined ? _cfg.MO_DOMINO     : 1000;
+var MO_DOUBLE     = _cfg.MO_DOUBLE     !== undefined ? _cfg.MO_DOUBLE     : 12;
+var MO_PIP_MULT   = _cfg.MO_PIP_MULT   !== undefined ? _cfg.MO_PIP_MULT   : 1.5;
+var MO_FORCE_PASS = _cfg.MO_FORCE_PASS !== undefined ? _cfg.MO_FORCE_PASS : 25;
+var MO_GHOST      = _cfg.MO_GHOST      !== undefined ? _cfg.MO_GHOST      : 15;
 
 // =====================================================================
 // ZOBRIST HASHING
@@ -545,7 +548,7 @@ function orderMovesAtPly(ply, numMoves, isAI, depth) {
 var nodeCount = 0;
 var NODE_LIMIT = 20000000;
 var timeStart = 0;
-var TIME_BUDGET = 5000;
+var TIME_BUDGET = _cfg.TIME_BUDGET !== undefined ? _cfg.TIME_BUDGET : 5000;
 
 function minimaxBB(isAI, depth, alpha, beta, ext) {
   nodeCount++;
@@ -885,6 +888,13 @@ function chooseMoveHard(aiTileDescs, humanTileDescs, left, right, moveHistory, l
   var committedScores = {};
   timeStart = Date.now();
 
+  // Adaptive time budget: more time for opening (wide tree), less for endgame (solved fast)
+  var moveBudget;
+  if (totalTiles >= 24) moveBudget = TIME_BUDGET * 2;       // Opening: 2x budget
+  else if (totalTiles >= 18) moveBudget = TIME_BUDGET * 1.2; // Early mid: 1.2x budget
+  else if (totalTiles >= 12) moveBudget = TIME_BUDGET;       // Mid-game: normal budget
+  else moveBudget = Math.min(TIME_BUDGET, 1000);             // Endgame: 1s max (solves instantly)
+
   // Iterative deepening
   for (var iterDepth = 1; iterDepth <= 50; iterDepth++) {
     nodeCount = 0;
@@ -1048,8 +1058,9 @@ function chooseMoveHard(aiTileDescs, humanTileDescs, left, right, moveHistory, l
       break;
     }
 
+    // Time check (uses adaptive budget per move)
     var elapsed = Date.now() - timeStart;
-    if (elapsed > TIME_BUDGET * 0.5) {
+    if (elapsed > moveBudget * 0.5) {
       break;
     }
   }
@@ -1093,6 +1104,11 @@ function findLegalMove(legalMoves, tileId, endStr) {
 
 onmessage = function (e) {
   var data = e.data;
+
+  // Allow per-message time budget override (for analysis mode)
+  if (data.timeBudget !== undefined) {
+    TIME_BUDGET = data.timeBudget;
+  }
 
   var left = data.boardEmpty ? null : data.left;
   var right = data.boardEmpty ? null : data.right;
