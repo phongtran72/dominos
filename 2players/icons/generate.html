@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html><head><title>Generate Icons</title></head>
+<body>
+<p>Right-click each image below and "Save image as" to create the PNG icons:</p>
+<h3>192x192</h3>
+<canvas id="c192" width="192" height="192"></canvas>
+<h3>512x512</h3>
+<canvas id="c512" width="512" height="512"></canvas>
+<script>
+var sizes = [192, 512];
+var img = new Image();
+img.onload = function () {
+  sizes.forEach(function (s) {
+    var c = document.getElementById('c' + s);
+    var ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0, s, s);
+  });
+};
+img.src = 'icon.svg';
+</script>
+</body>
+</html>

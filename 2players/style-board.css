@@ -1,0 +1,91 @@
+/* ============================================================
+   style-board.css — Snake/Chain Board Overrides + Colored Pips
+   Loaded IN ADDITION to style.css (not a replacement)
+   ============================================================ */
+
+/* --- Board Area: 2D scrollable surface --- */
+#board-area {
+  flex: 1;
+  display: block;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 4px 0;
+  min-height: 100px;
+  position: relative;
+}
+
+#board {
+  position: relative;
+  display: block;
+  min-width: 100%;
+  min-height: 100%;
+  padding: 0;
+  gap: 0;
+}
+
+/* --- Snake tile positioning --- */
+.snake-tile {
+  position: absolute;
+  transition: left 0.25s ease, top 0.25s ease;
+}
+
+/* --- End markers: absolutely positioned at chain endpoints --- */
+.end-marker {
+  position: absolute;
+  z-index: 20;
+  flex-shrink: initial;
+}
+
+/* --- Colored pips by face value --- */
+.tile-half[data-value="1"] .pip:not(.pip--hidden) {
+  background: #d04040;
+}
+
+.tile-half[data-value="2"] .pip:not(.pip--hidden) {
+  background: #2d8a4e;
+}
+
+.tile-half[data-value="3"] .pip:not(.pip--hidden) {
+  background: #7b3fa0;
+}
+
+.tile-half[data-value="4"] .pip:not(.pip--hidden) {
+  background: #2874a6;
+}
+
+.tile-half[data-value="5"] .pip:not(.pip--hidden) {
+  background: #d4a017;
+}
+
+.tile-half[data-value="6"] .pip:not(.pip--hidden) {
+  background: #e06030;
+}
+
+/* Blank face (value=0) — no visible pips, no color change needed */
+
+/* --- Enhanced 3D tile look --- */
+.tile--board {
+  box-shadow:
+    0 2px 6px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  border: 1.5px solid #aaa;
+}
+
+.tile--board .tile-half {
+  background: #f8f4e8;
+}
+
+/* Divider line between halves — subtle groove */
+.tile--board.tile--horizontal .tile-half:first-child {
+  border-right: 1.5px solid #bba;
+}
+
+.tile--board.tile--vertical .tile-half:first-child {
+  border-bottom: 1.5px solid #bba;
+}
+
+/* --- Board tile size adjustments for snake layout --- */
+/* Use slightly larger pips on board for visibility */
+.tile--board .pip:not(.pip--hidden) {
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.15);
+}
