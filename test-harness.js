@@ -303,19 +303,41 @@
         expectedType: 'failed_block'
       },
       {
-        name: 'Ghost 13 — [0|0] stuck in hand counts as 13',
+        name: 'Ghost 13 — [0|0] stuck + all 6 zero-suit tiles on board → 13 pips',
+        humanTiles: [[0, 0]],
+        aiTiles: [[1, 2]],
+        boardTiles: [
+          [0, 1, 'left'], [0, 2, 'left'], [1, 3, 'right'],
+          [0, 3, 'right'], [0, 4, 'right'], [2, 5, 'left'],
+          [0, 5, 'left'], [0, 6, 'left']
+        ],
+        // Board chain includes all 6 zero-suit tiles → Ghost 13 triggers
+        // Final board: left=6, right=4. [0|0] can't play. AI [1|2] can't play.
+        lastPlacer: 'ai',
+        moveHistory: [
+          { player: 'human', tile: new D.Tile(0, 5), end: 'left', boardEnds: { left: 0, right: 4 } },
+          { player: 'ai', tile: new D.Tile(0, 6), end: 'left', boardEnds: { left: 6, right: 4 } }
+        ],
+        expectedAggressor: 'ai',
+        expectedWinner: 'ai', // AI pips: 3, Human pips: 13 (ghost). 3 <= 13 → successful
+        expectedType: 'successful_block'
+      },
+      {
+        name: 'Ghost 13 — [0|0] stuck but NOT all zero-suit tiles on board → no ghost',
         humanTiles: [[0, 0]],
         aiTiles: [[1, 2]],
         boardTiles: [[3, 4, 'left'], [4, 5, 'right']],
-        // Board: left=3, right=5. [0|0] can't play → ghost 13
+        // Board: left=3, right=5. [0|0] can't play but zero-suit tiles NOT all on board
+        // Ghost 13 does NOT trigger. Human pips: 0, AI pips: 3. AI is aggressor.
+        // 3 > 0 → failed block, human wins
         lastPlacer: 'ai',
         moveHistory: [
           { player: 'human', tile: new D.Tile(3, 4), end: 'left', boardEnds: { left: 3, right: 4 } },
           { player: 'ai', tile: new D.Tile(4, 5), end: 'right', boardEnds: { left: 3, right: 5 } }
         ],
         expectedAggressor: 'ai',
-        expectedWinner: 'ai', // AI pips: 3, Human pips: 13 (ghost). 3 <= 13 → successful
-        expectedType: 'successful_block'
+        expectedWinner: 'human', // AI pips: 3 > Human pips: 0 (no ghost) → failed block
+        expectedType: 'failed_block'
       }
     ];
   }

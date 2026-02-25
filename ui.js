@@ -946,7 +946,8 @@
       }),
       legalMoves: legalMoves.map(function (m) {
         return { tileLow: m.tile.low, tileHigh: m.tile.high, end: m.end };
-      })
+      }),
+      matchScore: { ai: engine.matchScore.ai, human: engine.matchScore.human }
     };
 
     aiWorker.onmessage = function (e) {
@@ -1078,7 +1079,8 @@
         }),
         legalMoves: legalMoves.map(function (m) {
           return { tileLow: m.tile.low, tileHigh: m.tile.high, end: m.end };
-        })
+        }),
+        matchScore: { ai: engine.matchScore.ai, human: engine.matchScore.human }
       };
 
       aiWorker.onmessage = function (e) {

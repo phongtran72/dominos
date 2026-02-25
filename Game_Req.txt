@@ -148,7 +148,7 @@ At the end of the hand, if:
 
 
 The [0–0] tile remains in a player’s hand, and
-It has no legal placement on the final board layout,
+All 6 other zero-suit tiles ([0–1] through [0–6]) are on the final board layout,
 
 
 

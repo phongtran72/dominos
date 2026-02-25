@@ -37,6 +37,9 @@
   // Bit position of [0|0]
   var TILE_00_BIT = 0;
 
+  // Bitmask of zero-suit tiles excluding [0-0] (i.e. [0-1] through [0-6])
+  var ZERO_SUIT_NO_00 = 0;
+
   // Build lookup tables
   (function () {
     var idx = 0;
@@ -57,6 +60,7 @@
         idx++;
       }
     }
+    ZERO_SUIT_NO_00 = SUIT_MASK[0] & ~TILE_00_BIT;
   })();
 
   // =====================================================================
@@ -123,7 +127,7 @@
   var W_LOCKIN      = _cfg.W_LOCKIN      !== undefined ? _cfg.W_LOCKIN      : 8;
   var W_LOCKIN_BOTH = _cfg.W_LOCKIN_BOTH !== undefined ? _cfg.W_LOCKIN_BOTH : 15;
   var W_GHOST       = _cfg.W_GHOST       !== undefined ? _cfg.W_GHOST       : 10;
-  var W_DOUBLE      = _cfg.W_DOUBLE      !== undefined ? _cfg.W_DOUBLE      : 0.5;
+  var W_DOUBLE      = _cfg.W_DOUBLE      !== undefined ? _cfg.W_DOUBLE      : 1.5;
 
   // Move ordering weights
   var MO_DOMINO     = _cfg.MO_DOMINO     !== undefined ? _cfg.MO_DOMINO     : 1000;
@@ -172,6 +176,8 @@
   var ttValue  = new Int16Array(TT_SIZE);
   var ttBestIdx = new Int8Array(TT_SIZE);
   var ttBestEnd = new Int8Array(TT_SIZE);
+  var ttGen    = new Uint8Array(TT_SIZE);
+  var ttGeneration = 0;
 
   var TT_EXACT = 1, TT_LOWER = 2, TT_UPPER = 3;
 
@@ -202,13 +208,14 @@
 
   function ttStore(hash, depth, flag, value, bestIdx, bestEnd) {
     var idx = (hash & TT_MASK) >>> 0;
-    if (ttFlag[idx] === 0 || depth >= ttDepth[idx]) {
+    if (ttFlag[idx] === 0 || ttGen[idx] !== ttGeneration || depth >= ttDepth[idx]) {
       ttHash[idx] = hash | 0;
       ttDepth[idx] = depth;
       ttFlag[idx] = flag;
       ttValue[idx] = value;
       ttBestIdx[idx] = bestIdx;
       ttBestEnd[idx] = bestEnd;
+      ttGen[idx] = ttGeneration;
     }
   }
 
@@ -223,6 +230,7 @@
   var gHash = 0;         // Zobrist hash
   var gPly = 0;          // current ply
   var gConsPass = 0;     // consecutive passes
+  var gMatchDiff = 0;    // AI score - Human score (match level)
 
   // Puppeteer tracking
   var gP1Who = -1, gP1L = 0, gP1R = 0, gP1Tile = -1;
@@ -319,15 +327,15 @@
   // PIP COUNTING (bitboard)
   // =====================================================================
 
-  function totalPipsBB(hand, left, right) {
+  function totalPipsBB(hand, bothHands) {
     var sum = 0;
+    // Ghost 13: [0-0] counts as 13 when all 6 zero-suit tiles are on the board
+    var ghost13 = (hand & TILE_00_BIT) && ((bothHands & ZERO_SUIT_NO_00) === 0);
     var h = hand;
     while (h) {
       var bit = h & (-h);
       var idx = 31 - Math.clz32(bit);
-      // Ghost 13: [0-0] counts as 13 when unplayable (no 0 on either end)
-      if (idx === 0 && left !== 0 && right !== 0 && left !== 7) {
-        // idx 0 is tile [0|0] (first tile in our indexing)
+      if (idx === 0 && ghost13) {
         sum += 13;
       } else {
         sum += TILE_PIPS[idx];
@@ -337,15 +345,15 @@
     return sum;
   }
 
-  // Note: TILE_00_BIT corresponds to tile index 0 which is [0|0]
-  // So checking (hand & 1) checks for [0|0] in hand
+  // TILE_00_BIT = bit 0 = [0|0]; ZERO_SUIT_NO_00 = bits 1-6 = [0-1]..[0-6]
 
   // =====================================================================
   // TERMINAL SCORING (from AI's perspective, positive = good)
   // =====================================================================
 
-  function scoreDominoBB(winnerIsAI, loserHand, left, right) {
-    var pips = totalPipsBB(loserHand, left, right);
+  function scoreDominoBB(winnerIsAI, loserHand) {
+    // In domino, winner's hand is empty, so bothHands = loserHand
+    var pips = totalPipsBB(loserHand, loserHand);
     return winnerIsAI ? pips : -pips;
   }
 
@@ -426,8 +434,9 @@
                                        gP2Who, gP2L, gP2R,
                                        lastPlacerHand, otherHand);
 
-    var aiPips = totalPipsBB(gAiHand, gLeft, gRight);
-    var humanPips = totalPipsBB(gHumanHand, gLeft, gRight);
+    var bothHands = gAiHand | gHumanHand;
+    var aiPips = totalPipsBB(gAiHand, bothHands);
+    var humanPips = totalPipsBB(gHumanHand, bothHands);
 
     var aggrPips = (aggressor === 1) ? aiPips : humanPips;
     var oppPips = (aggressor === 1) ? humanPips : aiPips;
@@ -449,8 +458,9 @@
     var left = gLeft, right = gRight;
     var aiHand = gAiHand, humanHand = gHumanHand;
 
-    var aiPips = totalPipsBB(aiHand, left, right);
-    var humanPips = totalPipsBB(humanHand, left, right);
+    var bothHands = aiHand | humanHand;
+    var aiPips = totalPipsBB(aiHand, bothHands);
+    var humanPips = totalPipsBB(humanHand, bothHands);
 
     // 1. Pip advantage
     var pipScore = (humanPips - aiPips) * W_PIP;
@@ -485,9 +495,9 @@
       }
     }
 
-    // 5. Ghost 13 pressure
+    // 5. Ghost 13 pressure (all 6 zero-suit tiles on board = [0-0] is dead)
     var ghost = 0;
-    if (left !== 7 && left !== 0 && right !== 0) {
+    if ((bothHands & ZERO_SUIT_NO_00) === 0) {
       if (humanHand & TILE_00_BIT) ghost = W_GHOST;
       if (aiHand & TILE_00_BIT) ghost -= W_GHOST;
     }
@@ -509,7 +519,27 @@
       humanDoubles ^= bit;
     }
 
-    return pipScore + mobScore + tileScore + suitScore + ghost + doublePen;
+    // Phase-dependent scaling
+    var totalRemaining = popcount(aiHand) + popcount(humanHand);
+    var phasePip, phaseMob, phaseSuit, phaseDbl;
+    if (totalRemaining >= 20) {
+      phasePip = 0.7; phaseMob = 1.5; phaseSuit = 1.3; phaseDbl = 1.3;
+    } else if (totalRemaining < 8) {
+      phasePip = 1.5; phaseMob = 0.6; phaseSuit = 1.5; phaseDbl = 1.0;
+    } else {
+      phasePip = 1.0; phaseMob = 1.0; phaseSuit = 1.0; phaseDbl = 1.0;
+    }
+
+    // Match-score awareness: adjust strategy when leading/trailing significantly
+    if (gMatchDiff >= 50) {
+      // Leading big: defensive — shed pips faster, less risky lock-in plays
+      phasePip *= 1.4; phaseSuit *= 0.6;
+    } else if (gMatchDiff <= -50) {
+      // Trailing big: aggressive — lock-in and mobility matter more
+      phasePip *= 0.7; phaseSuit *= 1.5; phaseMob *= 1.3;
+    }
+
+    return pipScore * phasePip + mobScore * phaseMob + tileScore + suitScore * phaseSuit + ghost + doublePen * phaseDbl;
   }
 
   // =====================================================================
@@ -517,14 +547,14 @@
   // =====================================================================
 
   var MAX_DEPTH_SLOTS = 64;
-  var killerTileId = new Int8Array(MAX_DEPTH_SLOTS);
-  var killerEnd = new Int8Array(MAX_DEPTH_SLOTS);
+  var killerTileId = new Int8Array(MAX_DEPTH_SLOTS * 2);
+  var killerEnd = new Int8Array(MAX_DEPTH_SLOTS * 2);
 
   var historyScore = new Array(28);
   for (var hi = 0; hi < 28; hi++) historyScore[hi] = [0, 0, 0];
 
   function clearMoveOrderingData() {
-    for (var k = 0; k < MAX_DEPTH_SLOTS; k++) {
+    for (var k = 0; k < MAX_DEPTH_SLOTS * 2; k++) {
       killerTileId[k] = -1;
       killerEnd[k] = -2;
     }
@@ -553,10 +583,14 @@
       // Domino detection (last tile => instant win)
       if (popcount(myHand) === 1) s += MO_DOMINO;
 
-      // Killer move bonus
-      if (depth >= 0 && depth < MAX_DEPTH_SLOTS &&
-          killerTileId[depth] === tIdx && killerEnd[depth] === end) {
-        s += 5000;
+      // Killer move bonus (two slots)
+      if (depth >= 0 && depth < MAX_DEPTH_SLOTS) {
+        var kd = depth * 2;
+        if (killerTileId[kd] === tIdx && killerEnd[kd] === end) {
+          s += 5000;
+        } else if (killerTileId[kd + 1] === tIdx && killerEnd[kd + 1] === end) {
+          s += 4500;
+        }
       }
 
       // History heuristic
@@ -582,9 +616,10 @@
       }
       if (countMovesBB(oppHand, newL, newR) === 0) s += MO_FORCE_PASS;
 
-      // Ghost 13 exploitation
-      if (isAI && (oppHand & TILE_00_BIT) && newL !== 0 && newR !== 0) {
-        s += MO_GHOST;
+      // Ghost 13 exploitation (all 6 zero-suit tiles on board after this move)
+      if (isAI && (oppHand & TILE_00_BIT)) {
+        var newBothHands = (myHand ^ (1 << tIdx)) | oppHand;
+        if ((newBothHands & ZERO_SUIT_NO_00) === 0) s += MO_GHOST;
       }
 
       MOVE_SCORE_BUF[base + i] = s;
@@ -651,11 +686,14 @@
 
     // --- Depth limit with quiescence ---
     if (depth <= 0) {
+      var totalRemaining = popcount(gAiHand) + popcount(gHumanHand);
+      var maxExt = 6 + Math.max(0, 12 - totalRemaining);
       var extended = false;
-      if (ext < 6) {
-        var totalRemaining = popcount(gAiHand) + popcount(gHumanHand);
+      if (ext < maxExt) {
         if (numMoves === 1) {
           extended = true; // forced move, no branching cost
+        } else if (gConsPass > 0) {
+          extended = true; // after a pass = tactically sharp
         } else if (totalRemaining <= 8) {
           var oppHand = isAI ? gHumanHand : gAiHand;
           if (countMovesBB(oppHand, gLeft, gRight) <= 1) extended = true;
@@ -761,7 +799,7 @@
 
         // Terminal: AI domino
         if (gAiHand === 0) {
-          sc = scoreDominoBB(true, gHumanHand, newL, newR);
+          sc = scoreDominoBB(true, gHumanHand);
         }
         // Terminal: immediate block
         else if (countMovesBB(gHumanHand, newL, newR) === 0 &&
@@ -784,12 +822,18 @@
         if (sc > best) { best = sc; bestMoveIdx = tIdx; bestMoveEnd = end; }
         if (best > alpha) alpha = best;
         if (beta <= alpha) {
-          // Beta cutoff: killer + history
+          // Beta cutoff: killer (2 slots) + history
           if (depth >= 0 && depth < MAX_DEPTH_SLOTS) {
-            killerTileId[depth] = tIdx;
-            killerEnd[depth] = end;
+            var kd = depth * 2;
+            if (killerTileId[kd] !== tIdx || killerEnd[kd] !== end) {
+              killerTileId[kd + 1] = killerTileId[kd];
+              killerEnd[kd + 1] = killerEnd[kd];
+              killerTileId[kd] = tIdx;
+              killerEnd[kd] = end;
+            }
           }
-          historyScore[tIdx][end + 1] += depth * depth;
+          var hv = historyScore[tIdx][end + 1] + depth * depth;
+          historyScore[tIdx][end + 1] = hv > 10000 ? 10000 : hv;
           break;
         }
       }
@@ -840,7 +884,7 @@
 
         // Terminal: human domino
         if (gHumanHand === 0) {
-          sc = scoreDominoBB(false, gAiHand, newL, newR);
+          sc = scoreDominoBB(false, gAiHand);
         }
         // Terminal: immediate block
         else if (countMovesBB(gAiHand, newL, newR) === 0 &&
@@ -864,10 +908,16 @@
         if (best < beta) beta = best;
         if (beta <= alpha) {
           if (depth >= 0 && depth < MAX_DEPTH_SLOTS) {
-            killerTileId[depth] = tIdx;
-            killerEnd[depth] = end;
+            var kd = depth * 2;
+            if (killerTileId[kd] !== tIdx || killerEnd[kd] !== end) {
+              killerTileId[kd + 1] = killerTileId[kd];
+              killerEnd[kd + 1] = killerEnd[kd];
+              killerTileId[kd] = tIdx;
+              killerEnd[kd] = end;
+            }
           }
-          historyScore[tIdx][end + 1] += depth * depth;
+          var hv = historyScore[tIdx][end + 1] + depth * depth;
+          historyScore[tIdx][end + 1] = hv > 10000 ? 10000 : hv;
           break;
         }
       }
@@ -958,6 +1008,7 @@
       gRight = board.isEmpty() ? 7 : board.rightEnd;
       gPly = 0;
       gConsPass = 0;
+      gMatchDiff = (engine.matchScore ? engine.matchScore.ai - engine.matchScore.human : 0);
 
       // Seed Puppeteer history from engine's moveHistory
       gP1Who = -1; gP1L = 0; gP1R = 0; gP1Tile = -1;
@@ -984,7 +1035,7 @@
       var totalTiles = popcount(gAiHand) + popcount(gHumanHand);
       gHash = computeRootHash(gAiHand, gHumanHand, gLeft, gRight, true, 0);
 
-      ttClear();
+      ttGeneration = (ttGeneration + 1) & 0xFF;
       clearMoveOrderingData();
 
       var bestMove = legalMoves[0];
@@ -1031,7 +1082,7 @@
         }
 
         // Aspiration window
-        var ASP_WINDOW = 30;
+        var ASP_WINDOW = (iterDepth >= 6) ? 15 : 30;
         var alphaW, betaW;
         if (iterDepth <= 1) {
           alphaW = -100000;
@@ -1103,16 +1154,25 @@
 
             // Terminal: AI domino
             if (gAiHand === 0) {
-              score = scoreDominoBB(true, gHumanHand, newL, newR);
+              score = scoreDominoBB(true, gHumanHand);
             }
             // Terminal: immediate block
             else if (countMovesBB(gHumanHand, newL, newR) === 0 &&
                      countMovesBB(gAiHand, newL, newR) === 0) {
               score = scoreBlockBB();
             }
-            // Recurse
+            // Recurse with PVS
             else {
-              score = minimaxBB(false, iterDepth - 1, curAlpha, betaW, 0);
+              if (i === 0) {
+                score = minimaxBB(false, iterDepth - 1, curAlpha, betaW, 0);
+              } else {
+                // Null window search
+                score = minimaxBB(false, iterDepth - 1, curAlpha, curAlpha + 1, 0);
+                if (score > curAlpha && score < betaW) {
+                  // Re-search with full window
+                  score = minimaxBB(false, iterDepth - 1, curAlpha, betaW, 0);
+                }
+              }
             }
 
             // Unmake root
@@ -1183,7 +1243,7 @@
 
         // Time check (uses adaptive budget per move)
         var elapsed = Date.now() - timeStart;
-        if (elapsed > moveBudget * 0.5) {
+        if (elapsed > moveBudget * 0.75) {
           break;
         }
       }

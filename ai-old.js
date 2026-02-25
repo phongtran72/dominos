@@ -23,7 +23,7 @@
   var W_LOCKIN      = _cfg.W_LOCKIN      !== undefined ? _cfg.W_LOCKIN      : 8;
   var W_LOCKIN_BOTH = _cfg.W_LOCKIN_BOTH !== undefined ? _cfg.W_LOCKIN_BOTH : 15;
   var W_GHOST       = _cfg.W_GHOST       !== undefined ? _cfg.W_GHOST       : 10;
-  var W_DOUBLE      = _cfg.W_DOUBLE      !== undefined ? _cfg.W_DOUBLE      : 0.5;
+  var W_DOUBLE      = _cfg.W_DOUBLE      !== undefined ? _cfg.W_DOUBLE      : 1.5;
 
   // Move ordering weights (used in orderMoves())
   var MO_DOMINO     = _cfg.MO_DOMINO     !== undefined ? _cfg.MO_DOMINO     : 1000;
@@ -201,18 +201,35 @@
     return c;
   }
 
-  // Pip total with Ghost 13
-  function totalPips(tiles, left, right) {
+  // Count zero-suit tiles (0-1 through 0-6) in a tile array
+  function countZeroSuit(tiles) {
+    var count = 0;
+    for (var i = 0; i < tiles.length; i++) {
+      var t = tiles[i];
+      if ((t.low === 0 || t.high === 0) && !(t.low === 0 && t.high === 0)) {
+        count++;
+      }
+    }
+    return count;
+  }
+
+  // Pip total with Ghost 13 (triggers when all 6 zero-suit tiles are on board)
+  function totalPips(tiles, allZeroSuitOnBoard) {
     var sum = 0;
     for (var i = 0; i < tiles.length; i++) {
       var t = tiles[i];
-      if (t.low === 0 && t.high === 0 && left !== 0 && right !== 0) {
+      if (t.low === 0 && t.high === 0 && allZeroSuitOnBoard) {
         sum += 13;
       } else {
         sum += t.low + t.high;
       }
     }
     return sum;
+  }
+
+  // Check if all 6 zero-suit tiles are on board (none in either hand)
+  function allZeroSuitPlayed(aiTiles, humanTiles) {
+    return countZeroSuit(aiTiles) + countZeroSuit(humanTiles) === 0;
   }
 
   // Remove tile at index, return new array
@@ -234,8 +251,10 @@
 
   // --- Terminal scoring (from AI's perspective, positive = good) ---
 
-  function scoreDomino(winnerIsAI, loserTiles, left, right) {
-    var pips = totalPips(loserTiles, left, right);
+  function scoreDomino(winnerIsAI, loserTiles) {
+    // In domino, winner's hand is empty, so only loser's tiles matter
+    var allZero = countZeroSuit(loserTiles) === 0;
+    var pips = totalPips(loserTiles, allZero);
     return winnerIsAI ? pips : -pips;
   }
 
@@ -330,8 +349,9 @@
     var aggressor = detectAggressor(p1Who, p1L, p1R, p1Tile, p2Who, p2L, p2R,
                                     lastPlacerTiles, otherTiles);
 
-    var aiPips = totalPips(aiTiles, left, right);
-    var humanPips = totalPips(humanTiles, left, right);
+    var allZero = allZeroSuitPlayed(aiTiles, humanTiles);
+    var aiPips = totalPips(aiTiles, allZero);
+    var humanPips = totalPips(humanTiles, allZero);
 
     var aggrPips = (aggressor === 1) ? aiPips : humanPips;
     var oppPips = (aggressor === 1) ? humanPips : aiPips;
@@ -350,8 +370,9 @@
   // --- Static evaluation for non-terminal nodes ---
 
   function evaluate(aiTiles, humanTiles, left, right) {
-    var aiPips = totalPips(aiTiles, left, right);
-    var humanPips = totalPips(humanTiles, left, right);
+    var allZero = allZeroSuitPlayed(aiTiles, humanTiles);
+    var aiPips = totalPips(aiTiles, allZero);
+    var humanPips = totalPips(humanTiles, allZero);
 
     // 1. Pip advantage (lower pips = better for AI)
     var pipScore = (humanPips - aiPips) * W_PIP;
@@ -391,14 +412,11 @@
       }
     }
 
-    // 6. Ghost 13 pressure: human has [0-0] and no 0 on either end
+    // 6. Ghost 13 pressure (all 6 zero-suit tiles on board = [0-0] is dead)
     var ghost = 0;
-    if (has00(humanTiles) && left !== null && left !== 0 && right !== 0) {
-      ghost = W_GHOST;
-    }
-    // AI has [0-0] and no 0 on ends — bad for AI
-    if (has00(aiTiles) && left !== null && left !== 0 && right !== 0) {
-      ghost -= W_GHOST;
+    if (allZero) {
+      if (has00(humanTiles)) ghost = W_GHOST;
+      if (has00(aiTiles)) ghost -= W_GHOST;
     }
 
     // 7. Double liability: unplayed doubles are risky (only match one suit)
@@ -410,7 +428,17 @@
       if (humanTiles[i].isDouble()) doublePen += (humanTiles[i].pipCount() + 2) * W_DOUBLE;
     }
 
-    return pipScore + mobScore + tileScore + suitScore + ghost + doublePen;
+    var totalRemaining = aiTiles.length + humanTiles.length;
+    var phasePip, phaseMob, phaseSuit, phaseDbl;
+    if (totalRemaining >= 20) {
+      phasePip = 0.7; phaseMob = 1.5; phaseSuit = 1.3; phaseDbl = 1.3;
+    } else if (totalRemaining < 8) {
+      phasePip = 1.5; phaseMob = 0.6; phaseSuit = 1.5; phaseDbl = 1.0;
+    } else {
+      phasePip = 1.0; phaseMob = 1.0; phaseSuit = 1.0; phaseDbl = 1.0;
+    }
+
+    return pipScore * phasePip + mobScore * phaseMob + tileScore + suitScore * phaseSuit + ghost + doublePen * phaseDbl;
   }
 
   // --- Move ordering (for alpha-beta efficiency) ---
@@ -454,9 +482,10 @@
       var oppMob = countMoves(oppTiles, newEnds[0], newEnds[1]);
       if (oppMob === 0) s += MO_FORCE_PASS;
 
-      // Ghost 13 exploitation
-      if (isAI && has00(oppTiles) && newEnds[0] !== 0 && newEnds[1] !== 0) {
-        s += MO_GHOST;
+      // Ghost 13 exploitation (check if this move makes all zero-suit tiles played)
+      if (isAI && has00(oppTiles)) {
+        var myRemaining = removeTile(myTiles, tIdx);
+        if (allZeroSuitPlayed(myRemaining, oppTiles)) s += MO_GHOST;
       }
 
       scored[i] = { i: i, s: s };
@@ -618,7 +647,7 @@
 
         // Terminal: AI domino
         if (newAI.length === 0) {
-          var sc = scoreDomino(true, humanTiles, newEnds[0], newEnds[1]);
+          var sc = scoreDomino(true, humanTiles);
           if (sc > best) { best = sc; bestMoveIdx = tileGIdx; bestMoveEnd = end; }
           if (best > alpha) alpha = best;
           if (beta <= alpha) break;
@@ -662,7 +691,8 @@
             killerTileId[depth] = gi;
             killerEnd[depth] = end;
           }
-          historyScore[gi][end + 1] += depth * depth;
+          var hv = historyScore[gi][end + 1] + depth * depth;
+          historyScore[gi][end + 1] = hv > 10000 ? 10000 : hv;
           break;
         }
       }
@@ -681,7 +711,7 @@
 
         // Terminal: human domino
         if (newHuman.length === 0) {
-          var sc = scoreDomino(false, aiTiles, newEnds[0], newEnds[1]);
+          var sc = scoreDomino(false, aiTiles);
           if (sc < best) { best = sc; bestMoveIdx = tileGIdx; bestMoveEnd = end; }
           if (best < beta) beta = best;
           if (beta <= alpha) break;
@@ -721,7 +751,8 @@
             killerTileId[depth] = tileGIdx;
             killerEnd[depth] = end;
           }
-          historyScore[tileGIdx][end + 1] += depth * depth;
+          var hv = historyScore[tileGIdx][end + 1] + depth * depth;
+          historyScore[tileGIdx][end + 1] = hv > 10000 ? 10000 : hv;
           break;
         }
       }
@@ -878,7 +909,7 @@
 
             // Terminal: AI domino
             if (newAI.length === 0) {
-              score = scoreDomino(true, humanTiles, newEnds[0], newEnds[1]);
+              score = scoreDomino(true, humanTiles);
             }
             // Terminal: immediate lock — Puppeteer-aware
             else if (countMoves(humanTiles, newEnds[0], newEnds[1]) === 0 &&

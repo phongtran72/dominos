@@ -19,14 +19,10 @@ window.Domino = window.Domino || {};
       return this.low + this.high;
     }
 
-    pipCountWithGhost(boardEnds) {
-      if (this.low === 0 && this.high === 0) {
-        // Ghost 13: if [0-0] is in hand and unplayable on current board
-        if (boardEnds && boardEnds.left !== null && boardEnds.right !== null) {
-          if (boardEnds.left !== 0 && boardEnds.right !== 0) {
-            return 13;
-          }
-        }
+    pipCountWithGhost(allZeroSuitOnBoard) {
+      // Ghost 13: [0-0] counts as 13 when all 6 other zero-suit tiles are on the board
+      if (this.low === 0 && this.high === 0 && allZeroSuitOnBoard) {
+        return 13;
       }
       return this.pipCount();
     }
@@ -107,10 +103,22 @@ window.Domino = window.Domino || {};
       return moves;
     }
 
-    totalPips(boardEnds) {
+    totalPips(board) {
+      // Check if all 6 zero-suit tiles ([0-1] through [0-6]) are on the board
+      var allZeroSuitOnBoard = false;
+      if (board && board.tiles && board.tiles.length > 0) {
+        var zeroCount = 0;
+        for (var i = 0; i < board.tiles.length; i++) {
+          var t = board.tiles[i].tile;
+          if (t && (t.low === 0 || t.high === 0) && !(t.low === 0 && t.high === 0)) {
+            zeroCount++;
+          }
+        }
+        allZeroSuitOnBoard = (zeroCount >= 6);
+      }
       var sum = 0;
       for (var i = 0; i < this.tiles.length; i++) {
-        sum += this.tiles[i].pipCountWithGhost(boardEnds);
+        sum += this.tiles[i].pipCountWithGhost(allZeroSuitOnBoard);
       }
       return sum;
     }
@@ -401,7 +409,7 @@ window.Domino = window.Domino || {};
     resolveDomino(winner) {
       var loser = this.getOpponent(winner);
       var loserHand = this.getHand(loser);
-      var points = loserHand.totalPips(this.hand.board.getEnds());
+      var points = loserHand.totalPips(this.hand.board);
 
       this.matchScore[winner] += points;
       this.previousHandWinner = winner;
@@ -418,10 +426,10 @@ window.Domino = window.Domino || {};
     resolveBlock() {
       var aggressor = this.determineAggressor();
       var opponent = this.getOpponent(aggressor);
-      var boardEnds = this.hand.board.getEnds();
+      var board = this.hand.board;
 
-      var aggressorPips = this.getHand(aggressor).totalPips(boardEnds);
-      var opponentPips = this.getHand(opponent).totalPips(boardEnds);
+      var aggressorPips = this.getHand(aggressor).totalPips(board);
+      var opponentPips = this.getHand(opponent).totalPips(board);
 
       var result;
 
@@ -464,8 +472,15 @@ window.Domino = window.Domino || {};
       var tile00 = hand.findById('0-0');
       if (!tile00) return null;
 
-      var ends = this.hand.board.getEnds();
-      if (ends.left !== 0 && ends.right !== 0) {
+      // Count zero-suit tiles on board ([0-1] through [0-6])
+      var zeroCount = 0;
+      for (var i = 0; i < this.hand.board.tiles.length; i++) {
+        var t = this.hand.board.tiles[i].tile;
+        if (t && (t.low === 0 || t.high === 0) && !(t.low === 0 && t.high === 0)) {
+          zeroCount++;
+        }
+      }
+      if (zeroCount >= 6) {
         return { player: player, triggered: true };
       }
       return { player: player, triggered: false };
