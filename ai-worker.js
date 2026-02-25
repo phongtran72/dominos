@@ -624,7 +624,7 @@ function orderMovesAtPly(ply, numMoves, isAI, depth) {
 var nodeCount = 0;
 var NODE_LIMIT = 20000000;
 var timeStart = 0;
-var TIME_BUDGET = _cfg.TIME_BUDGET !== undefined ? _cfg.TIME_BUDGET : 5000;
+var TIME_BUDGET = _cfg.TIME_BUDGET !== undefined ? _cfg.TIME_BUDGET : 20000;
 
 function minimaxBB(isAI, depth, alpha, beta, ext) {
   nodeCount++;

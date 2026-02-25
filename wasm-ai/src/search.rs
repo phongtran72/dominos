@@ -52,7 +52,7 @@ static mut TT_HINT_COUNT: u32 = 0;   // returned move hint only
 
 // Time management
 static mut TIME_START: f64 = 0.0;
-static mut TIME_BUDGET_MS: f64 = 5000.0;
+static mut TIME_BUDGET_MS: f64 = 20000.0;
 
 /// Get current time in milliseconds (via js_sys in WASM, or std in native).
 #[cfg(target_arch = "wasm32")]
@@ -457,7 +457,7 @@ pub fn choose_move(
         clear_move_ordering_data();
 
         TIME_START = now_ms();
-        let budget = if time_budget > 0.0 { time_budget } else { 5000.0 };
+        let budget = if time_budget > 0.0 { time_budget } else { 20000.0 };
 
         // Adaptive time budget
         let move_budget = if total_tiles >= 24 {
@@ -753,7 +753,7 @@ mod tests {
             0, 0, // cons_pass, match_diff
             -1, 0, 0, -1, // p1
             -1, 0, 0,     // p2
-            5000.0,        // 5s budget (matches browser default)
+            20000.0,       // 20s budget (matches browser default)
         );
 
         eprintln!("\n=== WASM (Rust native) Search Results ===");

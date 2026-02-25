@@ -650,7 +650,7 @@
   var nodeCount = 0;
   var NODE_LIMIT = 20000000; // 20M nodes
   var timeStart = 0;
-  var TIME_BUDGET = _cfg.TIME_BUDGET !== undefined ? _cfg.TIME_BUDGET : 5000; // 5 seconds
+  var TIME_BUDGET = _cfg.TIME_BUDGET !== undefined ? _cfg.TIME_BUDGET : 20000; // 20 seconds
 
   function minimaxBB(isAI, depth, alpha, beta, ext) {
     nodeCount++;
