@@ -18,20 +18,41 @@
 
 // =====================================================================
 // WASM ENGINE LOADING
+// On HTTP: loads .wasm via fetch (efficient, streaming)
+// On file://: fetch fails, falls back to base64-encoded JS file
 // =====================================================================
 var wasmReady = false;
 var wasmChooseMove = null;
+
+function wasmLoadedOk() {
+  wasmReady = true;
+  wasmChooseMove = wasm_bindgen.wasm_choose_move;
+}
+
+function tryBase64Fallback() {
+  try {
+    importScripts('./dominos_ai_base64.js');
+    var binary = atob(WASM_BASE64);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    wasm_bindgen.initSync({ module: bytes });
+    wasmLoadedOk();
+    console.log('[AI Worker] WASM loaded via base64 fallback (file://)');
+  } catch(e2) {
+    console.warn('[AI Worker] WASM base64 fallback failed, using JS engine:', e2);
+  }
+}
+
 try {
   importScripts('./dominos_ai.js');
-  // wasm_bindgen is defined by dominos_ai.js (no-modules target)
-  // Load WASM asynchronously via fetch
+  // Try fetch first (works on HTTP servers)
   wasm_bindgen('./dominos_ai_bg.wasm').then(function() {
-    wasmReady = true;
-    wasmChooseMove = wasm_bindgen.wasm_choose_move;
-    console.log('[AI Worker] WASM engine loaded successfully');
+    wasmLoadedOk();
+    console.log('[AI Worker] WASM engine loaded via fetch');
   }).catch(function(err) {
-    console.warn('[AI Worker] WASM load failed, using JS fallback:', err);
-    wasmReady = false;
+    // fetch failed (file:// protocol) — try base64 fallback
+    console.warn('[AI Worker] fetch failed, trying base64 fallback:', err.message || err);
+    tryBase64Fallback();
   });
 } catch(e) {
   console.warn('[AI Worker] WASM not available, using JS fallback:', e);
