@@ -12,7 +12,7 @@ This is a **double-six domino PWA** (Human vs AI). Read `docs/PROJECT_SUMMARY.md
 
 ## Key Reminders
 
-1. **Bump `sw.js` cache version** whenever any cached file changes (currently `dominos-v23`)
+1. **Bump `sw.js` cache version** whenever any cached file changes (currently `dominos-v24`)
 2. **Three AI engines must stay in sync**: `ai.js`, `ai-worker.js`, `ai-old.js` — all return `{ move, bestScore, depth, nodes, analysis }`
 3. **`ai-worker.js` is a standalone copy** of the bitboard engine — changes to `ai.js` search/eval must be manually mirrored
 4. **All game logic lives in `game.js`** — AI and UI reference it via `window.Domino`

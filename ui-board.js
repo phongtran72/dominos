@@ -34,6 +34,7 @@
   var difficulty = 'hard';
   var selectedEngine = 'new'; // 'old' or 'new'
   var openTiles = true;       // show AI tiles face-up
+  var matchPoints = 100;      // target score: 1, 50, or 100
   var isProcessing = false;
 
   // --- History Navigation State ---
@@ -87,6 +88,7 @@
       difficulty: difficulty,
       selectedEngine: selectedEngine,
       openTiles: openTiles,
+      matchPoints: matchPoints,
       hands: matchDeals.slice(),
       finalScore: { human: engine.matchScore.human, ai: engine.matchScore.ai },
       handCount: engine.handNumber
@@ -121,7 +123,7 @@
       info.innerHTML = '<div class="saved-deal-score">You ' + s.finalScore.human +
         ' — AI ' + s.finalScore.ai + '</div>' +
         '<div class="saved-deal-meta">' + s.handCount + ' hands · ' +
-        s.difficulty + ' · ' + dateStr + '</div>';
+        s.difficulty + ' · ' + (s.matchPoints || 100) + 'pt · ' + dateStr + '</div>';
 
       var actions = document.createElement('div');
       actions.className = 'saved-deal-actions';
@@ -221,6 +223,7 @@
     difficulty = deal.difficulty;
     selectedEngine = deal.selectedEngine;
     openTiles = deal.openTiles;
+    matchPoints = deal.matchPoints || 100;
 
     replayDeals = deal;
     replayHandIndex = 0;
@@ -228,6 +231,7 @@
 
     engine = new D.GameEngine();
     engine.newMatch(difficulty);
+    engine.targetScore = matchPoints;
     if (selectedEngine === 'old') {
       ai = new D.OldAIPlayer(difficulty);
     } else {
@@ -361,6 +365,20 @@
       });
     }
 
+    // Match points buttons
+    var pointsBtns = document.querySelectorAll('[data-matchpoints]');
+    for (var i = 0; i < pointsBtns.length; i++) {
+      pointsBtns[i].addEventListener('click', function () {
+        for (var j = 0; j < pointsBtns.length; j++) pointsBtns[j].classList.remove('active');
+        this.classList.add('active');
+        matchPoints = parseInt(this.getAttribute('data-matchpoints'), 10);
+        var sub = document.getElementById('start-subtitle');
+        if (sub) sub.textContent = matchPoints === 1
+          ? 'Double-Six \u2022 Single Hand'
+          : 'Double-Six \u2022 First to ' + matchPoints;
+      });
+    }
+
     // Board style toggle
     var styleBtns = document.querySelectorAll('[data-boardstyle]');
     for (var i = 0; i < styleBtns.length; i++) {
@@ -437,6 +455,7 @@
     replayHandIndex = 0;
     engine = new D.GameEngine();
     engine.newMatch(difficulty);
+    engine.targetScore = matchPoints;
     if (selectedEngine === 'old') {
       ai = new D.OldAIPlayer(difficulty);
     } else {
