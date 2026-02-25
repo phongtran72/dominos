@@ -1,17 +1,42 @@
 // ============================================================
 // ai-worker.js — Self-contained Web Worker for Dominos AI
-//   (Bitboard Engine)
+//   (Bitboard Engine + WASM)
 //
 // This file is a complete, standalone AI engine that runs inside
 // a Web Worker. It has NO imports, NO DOM access, NO `window`.
 // All AI logic from ai.js is replicated here, adapted for the
 // worker context.
 //
+// WASM mode: if dominos_ai.js + dominos_ai_bg.wasm are available,
+// uses Rust WASM engine for search. Falls back to JS on failure.
+//
 // Uses 28-bit integer bitmasks for hands, make/unmake with XOR,
 // pre-computed lookup tables, and zero allocation in the hot path.
 // ============================================================
 
 'use strict';
+
+// =====================================================================
+// WASM ENGINE LOADING
+// =====================================================================
+var wasmReady = false;
+var wasmChooseMove = null;
+try {
+  importScripts('./dominos_ai.js');
+  // wasm_bindgen is defined by dominos_ai.js (no-modules target)
+  // Load WASM asynchronously via fetch
+  wasm_bindgen('./dominos_ai_bg.wasm').then(function() {
+    wasmReady = true;
+    wasmChooseMove = wasm_bindgen.wasm_choose_move;
+    console.log('[AI Worker] WASM engine loaded successfully');
+  }).catch(function(err) {
+    console.warn('[AI Worker] WASM load failed, using JS fallback:', err);
+    wasmReady = false;
+  });
+} catch(e) {
+  console.warn('[AI Worker] WASM not available, using JS fallback:', e);
+  wasmReady = false;
+}
 
 // =====================================================================
 // TILE INDEXING: double-six set, 28 tiles
@@ -1180,7 +1205,41 @@ onmessage = function (e) {
     return;
   }
 
-  // Run the hard AI search
+  // =====================================================================
+  // WASM dispatch: send JSON to Rust engine, parse JSON response
+  // Falls back to JS engine if WASM is not ready or fails
+  // =====================================================================
+  if (wasmReady && wasmChooseMove) {
+    try {
+      var wasmInput = JSON.stringify(data);
+      var wasmOutput = wasmChooseMove(wasmInput);
+      var wasmResult = JSON.parse(wasmOutput);
+
+      if (wasmResult && wasmResult.tileId) {
+        // Log TT diagnostics
+        if (wasmResult.ttProbes !== undefined) {
+          console.log('[WASM TT] probes=' + wasmResult.ttProbes +
+            ' hits=' + wasmResult.ttHits +
+            ' cutoffs=' + wasmResult.ttCutoffs +
+            ' hints=' + wasmResult.ttHints +
+            ' depth=' + wasmResult.depth +
+            ' nodes=' + wasmResult.nodes +
+            ' hitRate=' + (wasmResult.ttHits * 100 / Math.max(1, wasmResult.ttProbes)).toFixed(1) + '%' +
+            ' cutoffRate=' + (wasmResult.ttCutoffs * 100 / Math.max(1, wasmResult.ttProbes)).toFixed(1) + '%');
+        }
+        postMessage(wasmResult);
+        return;
+      }
+      // If WASM returned empty result, fall through to JS
+      console.warn('[AI Worker] WASM returned empty result, falling back to JS');
+    } catch (wasmErr) {
+      console.warn('[AI Worker] WASM search failed, falling back to JS:', wasmErr);
+    }
+  }
+
+  // =====================================================================
+  // JS fallback: run the JS bitboard engine
+  // =====================================================================
   var result = chooseMoveHard(data.aiTiles, data.humanTiles, left, right, moveHistory, legalMoves, data.matchScore);
   var best = result.move;
 

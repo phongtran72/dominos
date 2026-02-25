@@ -1,5 +1,5 @@
 // Service Worker — offline caching for Dominos PWA
-var CACHE_NAME = 'dominos-v20';
+var CACHE_NAME = 'dominos-v21';
 var ASSETS = [
   './',
   './index.html',
@@ -13,7 +13,9 @@ var ASSETS = [
   './ui-board.js',
   './manifest.json',
   './icons/icon-192.png',
-  './icons/icon-512.png'
+  './icons/icon-512.png',
+  './dominos_ai.js',
+  './dominos_ai_bg.wasm'
 ];
 
 // Install: cache all assets

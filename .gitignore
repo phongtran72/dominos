@@ -1,2 +1,4 @@
 icons/generate-icons.js
 icons/generate.html
+wasm-ai/target/
+wasm-out/
