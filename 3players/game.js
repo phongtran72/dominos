@@ -132,8 +132,8 @@ window.Domino = window.Domino || {};
       return { left: this.leftEnd, right: this.rightEnd };
     }
 
-    place(tile, end) {
-      var placement = { tile: tile, end: end, flipped: false };
+    place(tile, end, player) {
+      var placement = { tile: tile, end: end, flipped: false, player: player || null };
 
       if (this.isEmpty()) {
         // First tile: low on left, high on right
@@ -317,7 +317,7 @@ window.Domino = window.Domino || {};
       if (!isLegal) return { error: 'Illegal move' };
 
       // Place tile
-      var placement = this.hand.board.place(tile, end);
+      var placement = this.hand.board.place(tile, end, player);
       hand.remove(tile);
 
       // Record move
@@ -477,7 +477,7 @@ window.Domino = window.Domino || {};
       for (var i = 0; i < this.hand.moveHistory.length; i++) {
         var m = this.hand.moveHistory[i];
         if (!m.pass) {
-          this.hand.board.place(m.tile, m.end);
+          this.hand.board.place(m.tile, m.end, m.player);
         }
       }
 

@@ -867,8 +867,9 @@
             useVerticalClass = !isHorizTravel;
         }
 
+        var playerClass = p.player ? ' tile--by-' + p.player : '';
         el.className = 'tile tile--board tile--placed snake-tile ' +
-            (useVerticalClass ? 'tile--vertical' : 'tile--horizontal');
+            (useVerticalClass ? 'tile--vertical' : 'tile--horizontal') + playerClass;
 
         var firstVal, secondVal;
 
@@ -1118,7 +1119,7 @@
             var move = history[i];
             if (move.pass) continue;
 
-            board.place(move.tile, move.end);
+            board.place(move.tile, move.end, move.player);
 
             var tilesArr;
             if (move.player === 'human') tilesArr = humanTiles;
