@@ -1,8 +1,10 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -19,6 +21,7 @@
   <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
 </head>
+
 <body>
   <div id="game-container">
 
@@ -43,7 +46,7 @@
 
     <!-- AI Hand -->
     <div id="ai-hand-area">
-      <div class="hand-label">AI <span id="ai-tile-count" class="tile-count">(14)</span></div>
+      <div class="hand-label">AI <span id="ai-tile-count" class="tile-count">(9)</span></div>
       <div id="ai-hand" class="hand-row"></div>
     </div>
 
@@ -52,6 +55,7 @@
       <button id="nav-backward" class="btn btn-nav" style="display:none;" disabled>&laquo;</button>
       <span id="status-message">Welcome</span>
       <button id="nav-forward" class="btn btn-nav" style="display:none;" disabled>&raquo;</button>
+      <button id="draw-btn" class="btn btn-pass" style="display:none;">Draw</button>
       <button id="pass-btn" class="btn btn-pass" style="display:none;">Pass</button>
       <button id="undo-btn" class="btn btn-undo" style="display:none;">Undo</button>
     </div>
@@ -83,9 +87,14 @@
       <div id="analysis-list"></div>
     </div>
 
+    <!-- Boneyard -->
+    <div id="boneyard-area">
+      <div class="hand-label">Boneyard <span id="boneyard-count" class="tile-count">(10)</span></div>
+    </div>
+
     <!-- Human Hand -->
     <div id="human-hand-area">
-      <div class="hand-label">Your Hand <span id="human-tile-count" class="tile-count">(14)</span></div>
+      <div class="hand-label">Your Hand <span id="human-tile-count" class="tile-count">(9)</span></div>
       <div id="human-hand" class="hand-row"></div>
     </div>
   </div>
@@ -100,20 +109,6 @@
         <div class="radio-group">
           <button class="btn btn-option" data-difficulty="easy">Easy</button>
           <button class="btn btn-option active" data-difficulty="hard">Hard</button>
-        </div>
-      </div>
-      <div class="form-group">
-        <label>Engine</label>
-        <div class="radio-group">
-          <button class="btn btn-option" data-engine="old">Minimax</button>
-          <button class="btn btn-option active" data-engine="new">Bitboard</button>
-        </div>
-      </div>
-      <div class="form-group">
-        <label>AI Tiles</label>
-        <div class="radio-group">
-          <button class="btn btn-option" data-opentiles="hidden">Hidden</button>
-          <button class="btn btn-option active" data-opentiles="open">Open</button>
         </div>
       </div>
       <div class="form-group">
@@ -141,9 +136,9 @@
       <div class="form-group" style="margin-top:24px;">
         <label>Other Modes</label>
         <div class="radio-group">
-          <a href="../" class="btn btn-option">Standard (2P)</a>
-          <a href="../3players/" class="btn btn-option">3 Players</a>
-          <a href="../4players/" class="btn btn-option">4 Players</a>
+          <a href="../index.html" class="btn btn-option">Standard (2P)</a>
+          <a href="../3players/index.html" class="btn btn-option">3 Players</a>
+          <a href="../4players/index.html" class="btn btn-option">4 Players</a>
         </div>
       </div>
     </div>
@@ -220,7 +215,6 @@
   </div>
 
   <script src="game.js"></script>
-  <script src="ai-old.js"></script>
   <script src="ai.js"></script>
   <script>
     // Load the appropriate UI based on board style preference
@@ -237,4 +231,5 @@
     }
   </script>
 </body>
+
 </html>

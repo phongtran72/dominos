@@ -248,12 +248,17 @@ window.Domino = window.Domino || {};
       var humanHand = new Hand();
       var aiHand = new Hand();
 
-      for (var i = 0; i < 14; i++) {
+      // Draw variant: 9 tiles each, remaining 10 form the boneyard
+      var tilesPerPlayer = 9;
+      for (var i = 0; i < tilesPerPlayer; i++) {
         humanHand.add(allTiles[i]);
       }
-      for (var i = 14; i < 28; i++) {
+      for (var i = tilesPerPlayer; i < tilesPerPlayer * 2; i++) {
         aiHand.add(allTiles[i]);
       }
+
+      // Boneyard: remaining tiles in fixed order (stack — draw from index 0)
+      var boneyard = allTiles.slice(tilesPerPlayer * 2);
 
       // Sort human hand for display (by low value, then high)
       humanHand.tiles.sort(function (a, b) {
@@ -263,6 +268,7 @@ window.Domino = window.Domino || {};
       this.hand = {
         humanHand: humanHand,
         aiHand: aiHand,
+        boneyard: boneyard,
         board: new Board(),
         currentPlayer: leader,
         consecutivePasses: 0,
@@ -274,7 +280,7 @@ window.Domino = window.Domino || {};
       return this.hand;
     }
 
-    dealHandFromTiles(leader, humanTileData, aiTileData) {
+    dealHandFromTiles(leader, humanTileData, aiTileData, boneyardData) {
       this.handNumber++;
       var humanHand = new Hand();
       var aiHand = new Hand();
@@ -286,6 +292,13 @@ window.Domino = window.Domino || {};
         aiHand.add(new Tile(aiTileData[i].low, aiTileData[i].high));
       }
 
+      var boneyard = [];
+      if (boneyardData) {
+        for (var i = 0; i < boneyardData.length; i++) {
+          boneyard.push(new Tile(boneyardData[i].low, boneyardData[i].high));
+        }
+      }
+
       humanHand.tiles.sort(function (a, b) {
         return a.low - b.low || a.high - b.high;
       });
@@ -293,6 +306,7 @@ window.Domino = window.Domino || {};
       this.hand = {
         humanHand: humanHand,
         aiHand: aiHand,
+        boneyard: boneyard,
         board: new Board(),
         currentPlayer: leader,
         consecutivePasses: 0,
@@ -360,7 +374,46 @@ window.Domino = window.Domino || {};
       return { success: true, placement: placement, handEnd: handEnd };
     }
 
+    // Draw a single tile from the boneyard into a player's hand
+    drawFromBoneyard(player) {
+      if (!this.hand.boneyard || this.hand.boneyard.length === 0) return null;
+      var tile = this.hand.boneyard.shift(); // take from top of stack
+      this.getHand(player).add(tile);
+
+      // Record draw in move history
+      this.hand.moveHistory.push({
+        player: player,
+        tile: tile,
+        end: null,
+        draw: true,
+        boardEnds: this.hand.board.getEnds()
+      });
+
+      return tile;
+    }
+
+    // Draw tiles until the player can play (or boneyard is empty)
+    // Returns { drawn: Tile[], canPlay: boolean }
+    drawUntilCanPlay(player) {
+      var drawn = [];
+      while (this.hand.boneyard && this.hand.boneyard.length > 0) {
+        var tile = this.drawFromBoneyard(player);
+        drawn.push(tile);
+        var moves = this.getLegalMoves(player);
+        if (moves.length > 0) return { drawn: drawn, canPlay: true };
+      }
+      // Boneyard empty — check if player can now play
+      var moves = this.getLegalMoves(player);
+      return { drawn: drawn, canPlay: moves.length > 0 };
+    }
+
+    // Can this player draw from the boneyard?
+    canDraw() {
+      return this.hand.boneyard && this.hand.boneyard.length > 0;
+    }
+
     pass(player) {
+      // In draw variant, pass is only allowed when boneyard is empty
       // Record what values the player passed on
       var ends = this.hand.board.getEnds();
       if (ends.left !== null) {
@@ -378,7 +431,7 @@ window.Domino = window.Domino || {};
         boardEnds: this.hand.board.getEnds()
       });
 
-      // Check for confirmed lock (pass-pass)
+      // Check for confirmed lock (pass-pass) — only possible when boneyard is empty
       if (this.hand.consecutivePasses >= 2) {
         return this.resolveBlock();
       }
@@ -396,10 +449,12 @@ window.Domino = window.Domino || {};
       }
 
       // Immediate Lock: after placement, neither player has legal moves
+      // In draw variant, lock can only happen when boneyard is also empty
       var humanMoves = this.hand.humanHand.legalMoves(this.hand.board.getEnds());
       var aiMoves = this.hand.aiHand.legalMoves(this.hand.board.getEnds());
+      var boneyardEmpty = !this.hand.boneyard || this.hand.boneyard.length === 0;
 
-      if (humanMoves.length === 0 && aiMoves.length === 0) {
+      if (humanMoves.length === 0 && aiMoves.length === 0 && boneyardEmpty) {
         return this.resolveBlock();
       }
 
@@ -489,10 +544,10 @@ window.Domino = window.Domino || {};
     determineAggressor() {
       var history = this.hand.moveHistory;
 
-      // Find last two tile placements (not passes)
+      // Find last two tile placements (not passes, not draws)
       var placements = [];
       for (var i = history.length - 1; i >= 0; i--) {
-        if (!history[i].pass) {
+        if (!history[i].pass && !history[i].draw) {
           placements.unshift(history[i]);
           if (placements.length === 2) break;
         }
@@ -578,8 +633,13 @@ window.Domino = window.Domino || {};
 
       var move = this.hand.moveHistory.pop();
 
-      // Return tile to player's hand if it was a placement
-      if (!move.pass && move.tile) {
+      if (move.draw && move.tile) {
+        // Undo a draw: remove tile from hand, put back on top of boneyard
+        var hand = this.getHand(move.player);
+        hand.remove(move.tile);
+        this.hand.boneyard.unshift(move.tile);
+      } else if (!move.pass && move.tile) {
+        // Return tile to player's hand if it was a placement
         var hand = this.getHand(move.player);
         hand.add(move.tile);
         // Keep human hand sorted
@@ -594,7 +654,7 @@ window.Domino = window.Domino || {};
       this.hand.board = new Board();
       for (var i = 0; i < this.hand.moveHistory.length; i++) {
         var m = this.hand.moveHistory[i];
-        if (!m.pass) {
+        if (!m.pass && !m.draw) {
           this.hand.board.place(m.tile, m.end);
         }
       }
@@ -609,10 +669,10 @@ window.Domino = window.Domino || {};
         }
       }
 
-      // Recalculate lastPlacer
+      // Recalculate lastPlacer (skip passes and draws)
       this.hand.lastPlacer = null;
       for (var i = this.hand.moveHistory.length - 1; i >= 0; i--) {
-        if (!this.hand.moveHistory[i].pass) {
+        if (!this.hand.moveHistory[i].pass && !this.hand.moveHistory[i].draw) {
           this.hand.lastPlacer = this.hand.moveHistory[i].player;
           break;
         }

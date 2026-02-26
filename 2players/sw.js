@@ -1,22 +1,17 @@
 // Service Worker — offline caching for Dominos PWA (2-Player Draw variant)
-var CACHE_NAME = 'dominos-draw-v1';
+var CACHE_NAME = 'dominos-draw-v5';
 var ASSETS = [
   './',
   './index.html',
   './style.css',
   './style-board.css',
   './game.js',
-  './ai-old.js',
   './ai.js',
-  './ai-worker.js',
   './ui.js',
   './ui-board.js',
   './manifest.json',
   './icons/icon-192.png',
-  './icons/icon-512.png',
-  './dominos_ai.js',
-  './dominos_ai_bg.wasm',
-  './dominos_ai_base64.js'
+  './icons/icon-512.png'
 ];
 
 // Install: cache all assets

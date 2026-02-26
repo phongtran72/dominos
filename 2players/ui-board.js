@@ -28,13 +28,12 @@
   var els = {};
   var engine = null;
   var ai = null;
-  var aiWorker = null;
+  // No worker needed for draw variant
   var selectedTile = null;
   var selectedMoves = []; // legal moves for selected tile
   var difficulty = 'hard';
-  var selectedEngine = 'new'; // 'old' or 'new'
-  var openTiles = true;       // show AI tiles face-up
-  var matchPoints = 100;      // target score: 1, 50, or 100
+  var openTiles = false;       // always hidden in draw variant
+  var matchPoints = 100;       // target score: 1, 50, or 100
   var isProcessing = false;
 
   // --- History Navigation State ---
@@ -46,9 +45,7 @@
   var handResult = null;
   var lastAIAnalysis = null;
 
-  // --- Early Solve (precompute AI move at deal time) ---
-  var precomputedAIResult = null; // Cached worker result from deal-time dispatch
-  var precomputeValid = false;    // Whether cached result is still usable
+  // (No worker/precompute needed for draw variant — heuristic AI is synchronous)
 
   // --- Snake Layout State ---
   var currentLayout = [];     // cached layout for end marker positioning
@@ -83,11 +80,10 @@
   function saveDealToSlot(index) {
     var slots = loadAllDeals();
     slots[index] = {
-      version: 1,
+      version: 2,
+      variant: 'draw',
       savedAt: Date.now(),
       difficulty: difficulty,
-      selectedEngine: selectedEngine,
-      openTiles: openTiles,
       matchPoints: matchPoints,
       hands: matchDeals.slice(),
       finalScore: { human: engine.matchScore.human, ai: engine.matchScore.ai },
@@ -221,8 +217,6 @@
     if (!deal) return;
 
     difficulty = deal.difficulty;
-    selectedEngine = deal.selectedEngine;
-    openTiles = deal.openTiles;
     matchPoints = deal.matchPoints || 100;
 
     replayDeals = deal;
@@ -232,11 +226,7 @@
     engine = new D.GameEngine();
     engine.newMatch(difficulty);
     engine.targetScore = matchPoints;
-    if (selectedEngine === 'old') {
-      ai = new D.OldAIPlayer(difficulty);
-    } else {
-      ai = new D.AIPlayer(difficulty);
-    }
+    ai = new D.AIPlayer(difficulty);
 
     els.startOverlay.style.display = 'none';
 
@@ -264,7 +254,10 @@
     els.humanHand = document.getElementById('human-hand');
     els.humanTileCount = document.getElementById('human-tile-count');
     els.statusMessage = document.getElementById('status-message');
+    els.drawBtn = document.getElementById('draw-btn');
     els.passBtn = document.getElementById('pass-btn');
+    els.boneyardCount = document.getElementById('boneyard-count');
+    els.boneyardArea = document.getElementById('boneyard-area');
     els.board = document.getElementById('board');
     els.boardLeftMarker = document.getElementById('board-left-marker');
     els.boardRightMarker = document.getElementById('board-right-marker');
@@ -310,7 +303,6 @@
     els.board.appendChild(els.boardRightMarker);
 
     setupEventListeners();
-    initWorker();
     renderSavedDeals();
 
     // Recompute layout on resize
@@ -324,15 +316,7 @@
     }
   }
 
-  function initWorker() {
-    if (typeof Worker !== 'undefined') {
-      try {
-        aiWorker = new Worker('./ai-worker.js');
-      } catch (e) {
-        aiWorker = null;
-      }
-    }
-  }
+  // No worker needed for draw variant — AI uses synchronous heuristic
 
   function setupEventListeners() {
     // Difficulty buttons
@@ -345,26 +329,6 @@
       });
     }
 
-    // Engine buttons
-    var engineBtns = document.querySelectorAll('[data-engine]');
-    for (var i = 0; i < engineBtns.length; i++) {
-      engineBtns[i].addEventListener('click', function () {
-        for (var j = 0; j < engineBtns.length; j++) engineBtns[j].classList.remove('active');
-        this.classList.add('active');
-        selectedEngine = this.getAttribute('data-engine');
-      });
-    }
-
-    // Open tiles buttons
-    var tileBtns = document.querySelectorAll('[data-opentiles]');
-    for (var i = 0; i < tileBtns.length; i++) {
-      tileBtns[i].addEventListener('click', function () {
-        for (var j = 0; j < tileBtns.length; j++) tileBtns[j].classList.remove('active');
-        this.classList.add('active');
-        openTiles = this.getAttribute('data-opentiles') === 'open';
-      });
-    }
-
     // Match points buttons
     var pointsBtns = document.querySelectorAll('[data-matchpoints]');
     for (var i = 0; i < pointsBtns.length; i++) {
@@ -374,8 +338,8 @@
         matchPoints = parseInt(this.getAttribute('data-matchpoints'), 10);
         var sub = document.getElementById('start-subtitle');
         if (sub) sub.textContent = matchPoints === 1
-          ? 'Double-Six \u2022 Single Hand'
-          : 'Double-Six \u2022 First to ' + matchPoints;
+          ? 'Draw \u2022 Single Hand'
+          : 'Draw \u2022 2 Players \u2022 First to ' + matchPoints;
       });
     }
 
@@ -402,7 +366,8 @@
       });
     }
 
-    // Pass button
+    // Draw and Pass buttons
+    els.drawBtn.addEventListener('click', onDrawClicked);
     els.passBtn.addEventListener('click', onPassClicked);
 
     // Board end markers
@@ -456,11 +421,7 @@
     engine = new D.GameEngine();
     engine.newMatch(difficulty);
     engine.targetScore = matchPoints;
-    if (selectedEngine === 'old') {
-      ai = new D.OldAIPlayer(difficulty);
-    } else {
-      ai = new D.AIPlayer(difficulty);
-    }
+    ai = new D.AIPlayer(difficulty);
 
     els.startOverlay.style.display = 'none';
     showLeaderChoice();
@@ -485,7 +446,7 @@
   function startHand(leader) {
     if (replayDeals && replayHandIndex < replayDeals.hands.length) {
       var deal = replayDeals.hands[replayHandIndex];
-      engine.dealHandFromTiles(deal.leader, deal.humanTiles, deal.aiTiles);
+      engine.dealHandFromTiles(deal.leader, deal.humanTiles, deal.aiTiles, deal.boneyard);
       leader = deal.leader;
       replayHandIndex++;
     } else {
@@ -495,7 +456,8 @@
     matchDeals.push({
       leader: leader,
       humanTiles: engine.hand.humanHand.tiles.map(function (t) { return { low: t.low, high: t.high }; }),
-      aiTiles: engine.hand.aiHand.tiles.map(function (t) { return { low: t.low, high: t.high }; })
+      aiTiles: engine.hand.aiHand.tiles.map(function (t) { return { low: t.low, high: t.high }; }),
+      boneyard: engine.hand.boneyard.map(function (t) { return { low: t.low, high: t.high }; })
     });
 
     initialHumanTiles = engine.hand.humanHand.tiles.slice();
@@ -505,6 +467,9 @@
     handOver = false;
     handResult = null;
     lastAIAnalysis = null;
+
+    // Initialize AI tracker with dealt hand (enhanced AI needs this)
+    if (ai && ai.initHand) ai.initHand(engine);
 
     selectedTile = null;
     selectedMoves = [];
@@ -516,6 +481,7 @@
     renderAIHand();
     renderHumanHand();
     renderBoard();
+    updateBoneyardCount();
     hideEndMarkers();
     updateNavButtons();
     updateUndoButton();
@@ -523,10 +489,18 @@
     if (leader === 'human') {
       startHumanTurn();
     } else {
-      precomputeAIMove(); // Start worker immediately — don't wait for 500ms delay
       setStatus('AI is thinking...');
       disableHumanHand();
       setTimeout(function () { executeAITurn(); }, 500);
+    }
+  }
+
+  function updateBoneyardCount() {
+    if (!els.boneyardCount) return;
+    var count = (engine && engine.hand && engine.hand.boneyard) ? engine.hand.boneyard.length : 0;
+    els.boneyardCount.textContent = '(' + count + ')';
+    if (els.boneyardArea) {
+      els.boneyardArea.style.display = count > 0 ? '' : 'none';
     }
   }
 
@@ -544,10 +518,6 @@
 
   function onUndo() {
     if (isProcessing) return;
-
-    // Invalidate any precomputed AI result
-    precomputedAIResult = null;
-    precomputeValid = false;
 
     if (isReviewing) {
       undoFromReview();
@@ -676,14 +646,24 @@
     var legalMoves = engine.getLegalMoves('human');
 
     if (legalMoves.length === 0) {
-      setStatus('No legal moves — you must pass.');
-      els.passBtn.style.display = 'inline-block';
+      if (engine.canDraw()) {
+        // Boneyard has tiles — offer Draw button
+        setStatus('No legal moves — draw from the boneyard.');
+        els.drawBtn.style.display = 'inline-block';
+        els.passBtn.style.display = 'none';
+      } else {
+        // Boneyard empty — must pass
+        setStatus('No legal moves — you must pass.');
+        els.drawBtn.style.display = 'none';
+        els.passBtn.style.display = 'inline-block';
+      }
       disableHumanHand();
       hideEndMarkers();
       updateUndoButton();
       return;
     }
 
+    els.drawBtn.style.display = 'none';
     els.passBtn.style.display = 'none';
     setStatus('Your turn — select a tile to play.');
     renderHumanHand();
@@ -766,17 +746,48 @@
     disableHumanHand();
     updateNavButtons();
     els.undoBtn.style.display = 'none';
-    if (difficulty === 'hard' && aiWorker && selectedEngine === 'new') {
-      executeAITurn(); // No 500ms delay — start worker immediately
-    } else {
-      setTimeout(function () { executeAITurn(); }, 500);
+    setTimeout(function () { executeAITurn(); }, 500);
+  }
+
+  function onDrawClicked() {
+    if (isProcessing || isReviewing) return;
+    isProcessing = true;
+    els.drawBtn.style.display = 'none';
+    els.undoBtn.style.display = 'none';
+
+    // Draw tiles one at a time with animation delay
+    var result = engine.drawUntilCanPlay('human');
+    var drawnCount = result.drawn.length;
+
+    // Sort human hand after drawing
+    engine.hand.humanHand.tiles.sort(function (a, b) {
+      return a.low - b.low || a.high - b.high;
+    });
+
+    renderHumanHand();
+    renderAIHand();
+    updateBoneyardCount();
+
+    if (drawnCount > 0) {
+      setStatus('Drew ' + drawnCount + ' tile' + (drawnCount > 1 ? 's' : '') + ' from boneyard.');
     }
+
+    setTimeout(function () {
+      isProcessing = false;
+      if (result.canPlay) {
+        startHumanTurn();
+      } else {
+        // Boneyard empty and still can't play — must pass
+        startHumanTurn(); // will show Pass button
+      }
+    }, 600);
   }
 
   function onPassClicked() {
     if (isProcessing || isReviewing) return;
     isProcessing = true;
     els.passBtn.style.display = 'none';
+    els.drawBtn.style.display = 'none';
     els.undoBtn.style.display = 'none';
 
     var blockResult = engine.pass('human');
@@ -788,30 +799,17 @@
 
     setStatus('AI is thinking...');
     disableHumanHand();
-    if (difficulty === 'hard' && aiWorker && selectedEngine === 'new') {
-      executeAITurn(); // No 500ms delay — start worker immediately
-    } else {
-      setTimeout(function () { executeAITurn(); }, 500);
-    }
+    setTimeout(function () { executeAITurn(); }, 500);
   }
 
-  function applyAIMove(move, elapsed) {
-    if (openTiles) {
-      animateAITile(move, function () {
-        finishAIMove(move, elapsed);
-      });
-    } else {
-      finishAIMove(move, elapsed);
-    }
-  }
-
-  function finishAIMove(move, elapsed) {
+  function finishAIMove(move) {
     var result = engine.playTile('ai', move.tile, move.end);
 
     setStatus('AI plays ' + move.tile.toString() + '.');
     renderBoard();
     renderAIHand();
     renderHumanHand();
+    updateBoneyardCount();
     updateScoreboard();
 
     if (lastAIAnalysis) {
@@ -826,149 +824,63 @@
       }
     }
 
-    var postDelay = Math.max(300, 600 - elapsed);
-
     if (result.handEnd) {
-      setTimeout(function () { showHandResult(result.handEnd); }, postDelay);
+      setTimeout(function () { showHandResult(result.handEnd); }, 600);
       return;
     }
 
     setTimeout(function () {
       isProcessing = false;
       startHumanTurn();
-    }, postDelay);
-  }
-
-  // ============================================================
-  // AI Tile Animation — fly from AI hand to snake board position
-  // ============================================================
-  function animateAITile(move, callback) {
-    var tileId = move.tile.id;
-    var sourceEl = els.aiHand.querySelector('[data-tile-id="' + tileId + '"]');
-
-    if (!sourceEl) {
-      callback();
-      return;
-    }
-
-    var sourceRect = sourceEl.getBoundingClientRect();
-
-    // Create flying clone
-    var clone = sourceEl.cloneNode(true);
-    clone.className = sourceEl.className;
-    clone.classList.remove('tile--ai-open');
-    clone.classList.add('tile--flying');
-    clone.style.left = sourceRect.left + 'px';
-    clone.style.top = sourceRect.top + 'px';
-    clone.style.width = sourceRect.width + 'px';
-    clone.style.height = sourceRect.height + 'px';
-    document.body.appendChild(clone);
-
-    sourceEl.classList.add('tile--ghost');
-
-    // Target: endpoint of the snake chain
-    var boardAreaRect = els.boardArea.getBoundingClientRect();
-    var targetX, targetY;
-
-    if (currentLayout.length > 0) {
-      var targetLayout;
-      if (move.end === 'left') {
-        targetLayout = currentLayout[0];
-      } else {
-        targetLayout = currentLayout[currentLayout.length - 1];
-      }
-      // Convert from board-relative to viewport coords
-      var boardElRect = els.board.getBoundingClientRect();
-      targetX = boardElRect.left + targetLayout.pixelX + targetLayout.widthPx / 2 - sourceRect.width / 2;
-      targetY = boardElRect.top + targetLayout.pixelY + targetLayout.heightPx / 2 - sourceRect.height / 2;
-    } else {
-      targetX = boardAreaRect.left + boardAreaRect.width / 2 - sourceRect.width / 2;
-      targetY = boardAreaRect.top + boardAreaRect.height / 2 - sourceRect.height / 2;
-    }
-
-    requestAnimationFrame(function () {
-      requestAnimationFrame(function () {
-        clone.style.left = targetX + 'px';
-        clone.style.top = targetY + 'px';
-        clone.style.transform = 'scale(1.1)';
-      });
-    });
-
-    var animDone = false;
-    function onAnimComplete() {
-      if (animDone) return;
-      animDone = true;
-      if (clone.parentNode) clone.parentNode.removeChild(clone);
-      callback();
-    }
-
-    clone.addEventListener('transitionend', function onEnd(e) {
-      if (e.target !== clone) return;
-      clone.removeEventListener('transitionend', onEnd);
-      onAnimComplete();
-    });
-
-    setTimeout(onAnimComplete, 700);
-  }
-
-  // --- Early Solve: dispatch worker immediately at deal time ---
-  function precomputeAIMove() {
-    if (difficulty !== 'hard' || !aiWorker || selectedEngine !== 'new') return;
-
-    precomputedAIResult = null;
-    precomputeValid = true;
-
-    var legalMoves = engine.getLegalMoves('ai');
-    if (legalMoves.length === 0) return; // AI will pass — no precompute needed
-    if (legalMoves.length === 1) {
-      // Trivial: only one legal move
-      precomputedAIResult = {
-        tileId: legalMoves[0].tile.id, end: legalMoves[0].end,
-        bestScore: 0, depth: 0, nodes: 0, analysis: []
-      };
-      return;
-    }
-
-    // Build worker message (same serialization as executeAITurn)
-    var hand = engine.hand;
-    var board = hand.board;
-    var msg = {
-      aiTiles: hand.aiHand.tiles.map(function (t) { return { low: t.low, high: t.high }; }),
-      humanTiles: hand.humanHand.tiles.map(function (t) { return { low: t.low, high: t.high }; }),
-      left: board.isEmpty() ? null : board.leftEnd,
-      right: board.isEmpty() ? null : board.rightEnd,
-      boardEmpty: board.isEmpty(),
-      moveHistory: hand.moveHistory.map(function (m) {
-        return {
-          player: m.player,
-          tileLow: m.tile ? m.tile.low : null,
-          tileHigh: m.tile ? m.tile.high : null,
-          end: m.end,
-          pass: !!m.pass,
-          boardLeft: m.boardEnds ? m.boardEnds.left : null,
-          boardRight: m.boardEnds ? m.boardEnds.right : null
-        };
-      }),
-      legalMoves: legalMoves.map(function (m) {
-        return { tileLow: m.tile.low, tileHigh: m.tile.high, end: m.end };
-      })
-    };
-
-    aiWorker.onmessage = function (e) {
-      if (precomputeValid) {
-        precomputedAIResult = e.data;
-      }
-    };
-    aiWorker.onerror = function () {
-      precomputeValid = false; // Fall back to sync in executeAITurn
-    };
-    aiWorker.postMessage(msg);
+    }, 600);
   }
 
   function executeAITurn() {
     var legalMoves = engine.getLegalMoves('ai');
 
+    // If no legal moves, try drawing from boneyard
+    if (legalMoves.length === 0 && engine.canDraw()) {
+      setStatus('AI is drawing from boneyard...');
+      var drawResult = engine.drawUntilCanPlay('ai');
+      var drawnCount = drawResult.drawn.length;
+      renderAIHand();
+      updateBoneyardCount();
+
+      if (drawnCount > 0) {
+        setStatus('AI drew ' + drawnCount + ' tile' + (drawnCount > 1 ? 's' : '') + '.');
+      }
+
+      // Re-check legal moves after drawing
+      legalMoves = engine.getLegalMoves('ai');
+
+      if (legalMoves.length === 0) {
+        // Still no moves after drawing — pass
+        setTimeout(function () {
+          setStatus('AI has no legal moves — AI passes.');
+          var blockResult = engine.pass('ai');
+          if (blockResult) {
+            setTimeout(function () { showHandResult(blockResult); }, 800);
+            return;
+          }
+          setTimeout(function () {
+            isProcessing = false;
+            startHumanTurn();
+          }, 800);
+        }, 600);
+        return;
+      }
+
+      // Has moves after drawing — pick one after a delay
+      setTimeout(function () {
+        var aiResult = ai.chooseMove(legalMoves, engine);
+        lastAIAnalysis = { bestScore: aiResult.bestScore, depth: aiResult.depth, nodes: aiResult.nodes, analysis: aiResult.analysis };
+        finishAIMove(aiResult.move);
+      }, 600);
+      return;
+    }
+
     if (legalMoves.length === 0) {
+      // No legal moves and boneyard empty — pass
       setStatus('AI has no legal moves — AI passes.');
       var blockResult = engine.pass('ai');
 
@@ -984,156 +896,10 @@
       return;
     }
 
-    if (difficulty === 'hard' && aiWorker && selectedEngine === 'new') {
-      var t0 = Date.now();
-
-      // Path 1: Precomputed result already available
-      if (precomputedAIResult && precomputeValid) {
-        var result = precomputedAIResult;
-        precomputedAIResult = null;
-        precomputeValid = false;
-
-        lastAIAnalysis = {
-          bestScore: result.bestScore || 0,
-          depth: result.depth || 0,
-          nodes: result.nodes || 0,
-          analysis: result.analysis || []
-        };
-
-        var tileId = result.tileId;
-        var end = result.end;
-        var move = null;
-        for (var i = 0; i < legalMoves.length; i++) {
-          if (legalMoves[i].tile.id === tileId && legalMoves[i].end === end) {
-            move = legalMoves[i]; break;
-          }
-        }
-        if (!move) {
-          for (var i = 0; i < legalMoves.length; i++) {
-            if (legalMoves[i].tile.id === tileId) { move = legalMoves[i]; break; }
-          }
-        }
-        if (!move) move = legalMoves[0];
-
-        var elapsed = Date.now() - t0;
-        applyAIMove(move, elapsed);
-        return;
-      }
-
-      // Path 2: Precompute in flight — wait for it
-      if (precomputeValid && !precomputedAIResult) {
-        aiWorker.onmessage = function (e) {
-          precomputeValid = false;
-          var elapsed = Date.now() - t0;
-          var result = e.data;
-
-          lastAIAnalysis = {
-            bestScore: result.bestScore || 0,
-            depth: result.depth || 0,
-            nodes: result.nodes || 0,
-            analysis: result.analysis || []
-          };
-
-          var tileId = result.tileId;
-          var end = result.end;
-          var move = null;
-          for (var i = 0; i < legalMoves.length; i++) {
-            if (legalMoves[i].tile.id === tileId && legalMoves[i].end === end) {
-              move = legalMoves[i]; break;
-            }
-          }
-          if (!move) {
-            for (var i = 0; i < legalMoves.length; i++) {
-              if (legalMoves[i].tile.id === tileId) { move = legalMoves[i]; break; }
-            }
-          }
-          if (!move) move = legalMoves[0];
-
-          applyAIMove(move, elapsed);
-        };
-        aiWorker.onerror = function () {
-          precomputeValid = false;
-          var aiResult = ai.chooseMove(legalMoves, engine);
-          lastAIAnalysis = { bestScore: aiResult.bestScore, depth: aiResult.depth, nodes: aiResult.nodes, analysis: aiResult.analysis };
-          var elapsed = Date.now() - t0;
-          applyAIMove(aiResult.move, elapsed);
-        };
-        return;
-      }
-
-      // Path 3: No precompute — dispatch fresh
-      precomputeValid = false;
-
-      var hand = engine.hand;
-      var board = hand.board;
-      var msg = {
-        aiTiles: hand.aiHand.tiles.map(function (t) { return { low: t.low, high: t.high }; }),
-        humanTiles: hand.humanHand.tiles.map(function (t) { return { low: t.low, high: t.high }; }),
-        left: board.isEmpty() ? null : board.leftEnd,
-        right: board.isEmpty() ? null : board.rightEnd,
-        boardEmpty: board.isEmpty(),
-        moveHistory: hand.moveHistory.map(function (m) {
-          return {
-            player: m.player,
-            tileLow: m.tile ? m.tile.low : null,
-            tileHigh: m.tile ? m.tile.high : null,
-            end: m.end,
-            pass: !!m.pass,
-            boardLeft: m.boardEnds ? m.boardEnds.left : null,
-            boardRight: m.boardEnds ? m.boardEnds.right : null
-          };
-        }),
-        legalMoves: legalMoves.map(function (m) {
-          return { tileLow: m.tile.low, tileHigh: m.tile.high, end: m.end };
-        })
-      };
-
-      aiWorker.onmessage = function (e) {
-        var elapsed = Date.now() - t0;
-        var result = e.data;
-
-        lastAIAnalysis = {
-          bestScore: result.bestScore || 0,
-          depth: result.depth || 0,
-          nodes: result.nodes || 0,
-          analysis: result.analysis || []
-        };
-
-        var tileId = result.tileId;
-        var end = result.end;
-        var move = null;
-        for (var i = 0; i < legalMoves.length; i++) {
-          if (legalMoves[i].tile.id === tileId && legalMoves[i].end === end) {
-            move = legalMoves[i];
-            break;
-          }
-        }
-        if (!move) {
-          for (var i = 0; i < legalMoves.length; i++) {
-            if (legalMoves[i].tile.id === tileId) { move = legalMoves[i]; break; }
-          }
-        }
-        if (!move) move = legalMoves[0];
-
-        applyAIMove(move, elapsed);
-      };
-
-      aiWorker.onerror = function () {
-        var aiResult = ai.chooseMove(legalMoves, engine);
-        lastAIAnalysis = { bestScore: aiResult.bestScore, depth: aiResult.depth, nodes: aiResult.nodes, analysis: aiResult.analysis };
-        var elapsed = Date.now() - t0;
-        applyAIMove(aiResult.move, elapsed);
-      };
-
-      aiWorker.postMessage(msg);
-      return;
-    }
-
-    var t0 = Date.now();
+    // Has legal moves — pick one (synchronous heuristic)
     var aiResult = ai.chooseMove(legalMoves, engine);
     lastAIAnalysis = { bestScore: aiResult.bestScore, depth: aiResult.depth, nodes: aiResult.nodes, analysis: aiResult.analysis };
-    var elapsed = Date.now() - t0;
-    applyAIMove(aiResult.move, elapsed);
+    finishAIMove(aiResult.move);
   }
 
   // ---- Hand/Match Result ----
@@ -1190,7 +956,7 @@
     els.analysisProgress.style.display = 'none';
 
     // Show Analyze button only for hard+worker+new engine
-    var canAnalyze = difficulty === 'hard' && selectedEngine === 'new';
+    var canAnalyze = false; // No deep analysis in draw variant
     if (els.analyzeHandBtn) els.analyzeHandBtn.style.display = canAnalyze ? '' : 'none';
 
     var matchWinner = engine.checkMatchEnd();
@@ -1232,7 +998,7 @@
       engine.matchScore.human + ' &mdash; AI: ' + engine.matchScore.ai + '</div>' +
       '<div style="text-align:center;margin-top:8px;opacity:0.7;">Hands played: ' + engine.handNumber + '</div>';
     // Show Analyze button only for hard+worker+new engine
-    var canAnalyze = difficulty === 'hard' && selectedEngine === 'new';
+    var canAnalyze = false; // No deep analysis in draw variant
     if (els.analyzeMatchBtn) els.analyzeMatchBtn.style.display = canAnalyze ? '' : 'none';
     els.matchOverlay.style.display = 'flex';
   }
@@ -1330,8 +1096,6 @@
 
     analysisInProgress = true;
     analysisAborted = false;
-    precomputedAIResult = null;
-    precomputeValid = false;
 
     // Build game data from current hand state
     var dealInfo = matchDeals[matchDeals.length - 1];
@@ -1485,74 +1249,23 @@
       setTimeout(analyzeNextMove, 50);
     }
 
-    // Path A: Use Web Worker (async, with 30s budget)
-    if (aiWorker) {
-      var aHand = analysisEngine.hand;
-      var aBoard = aHand.board;
+    // Synchronous heuristic analysis
+    setTimeout(function () {
+      if (analysisAborted) { onAnalysisComplete(true); return; }
 
-      var msg = {
-        timeBudget: 30000,
-        aiTiles: (isHumanMove ? aHand.humanHand : aHand.aiHand).tiles.map(function (t) { return { low: t.low, high: t.high }; }),
-        humanTiles: (isHumanMove ? aHand.aiHand : aHand.humanHand).tiles.map(function (t) { return { low: t.low, high: t.high }; }),
-        left: aBoard.isEmpty() ? null : aBoard.leftEnd,
-        right: aBoard.isEmpty() ? null : aBoard.rightEnd,
-        boardEmpty: aBoard.isEmpty(),
-        moveHistory: aHand.moveHistory.map(function (m) {
-          var player = isHumanMove ? (m.player === 'ai' ? 'human' : 'ai') : m.player;
-          return {
-            player: player,
-            tileLow: m.tile ? m.tile.low : null,
-            tileHigh: m.tile ? m.tile.high : null,
-            end: m.end,
-            pass: !!m.pass,
-            boardLeft: m.boardEnds ? m.boardEnds.left : null,
-            boardRight: m.boardEnds ? m.boardEnds.right : null
-          };
-        }),
-        legalMoves: legalMoves.map(function (m) {
-          return { tileLow: m.tile.low, tileHigh: m.tile.high, end: m.end };
-        })
-      };
+      var engineForSearch = isHumanMove ? createSwappedProxy(analysisEngine) : analysisEngine;
+      var aiResult = ai.chooseMove(legalMoves, engineForSearch);
 
-      aiWorker.onmessage = function (e) {
-        if (analysisAborted) { onAnalysisComplete(true); return; }
-        var result = e.data;
-        processAnalysisResult(
-          result.tileId, result.end,
-          result.bestScore || 0, result.analysis || [],
-          result.depth || 0, result.nodes || 0
-        );
-      };
-      aiWorker.onerror = function () {
-        analysisResults.push({
-          moveNum: capturedIndex + 1, player: move.player,
-          forced: false, scoreDiff: 0, grade: 'Error', symbol: '!', error: true
-        });
-        analysisMoveIndex++;
-        setTimeout(analyzeNextMove, 50);
-      };
-      aiWorker.postMessage(msg);
+      var bestMove = aiResult.move;
+      var bestTileId = bestMove.tile ? bestMove.tile.id : (Math.min(bestMove.tile.low, bestMove.tile.high) + '-' + Math.max(bestMove.tile.low, bestMove.tile.high));
+      var bestEnd = bestMove.end;
 
-    // Path B: Synchronous fallback (no worker — file:// protocol)
-    } else {
-      // Use setTimeout to let UI update before blocking search
-      setTimeout(function () {
-        if (analysisAborted) { onAnalysisComplete(true); return; }
-
-        var engineForSearch = isHumanMove ? createSwappedProxy(analysisEngine) : analysisEngine;
-        var aiResult = ai.chooseMove(legalMoves, engineForSearch);
-
-        var bestMove = aiResult.move;
-        var bestTileId = bestMove.tile ? bestMove.tile.id : (Math.min(bestMove.tile.low, bestMove.tile.high) + '-' + Math.max(bestMove.tile.low, bestMove.tile.high));
-        var bestEnd = bestMove.end;
-
-        processAnalysisResult(
-          bestTileId, bestEnd,
-          aiResult.bestScore || 0, aiResult.analysis || [],
-          aiResult.depth || 0, aiResult.nodes || 0
-        );
-      }, 50);
-    }
+      processAnalysisResult(
+        bestTileId, bestEnd,
+        aiResult.bestScore || 0, aiResult.analysis || [],
+        aiResult.depth || 0, aiResult.nodes || 0
+      );
+    }, 50);
   }
 
   function cancelAnalysis() {
@@ -1565,7 +1278,7 @@
   function restoreOverlayButtons() {
     document.getElementById('review-hand-btn').style.display = '';
     document.getElementById('next-hand-btn').style.display = '';
-    var canAnalyze = difficulty === 'hard' && selectedEngine === 'new';
+    var canAnalyze = false; // No deep analysis in draw variant
     if (els.analyzeHandBtn) els.analyzeHandBtn.style.display = canAnalyze ? '' : 'none';
     // Restore match overlay buttons too
     var playAgainBtn = document.getElementById('play-again-btn');
@@ -2188,6 +1901,8 @@
     var board = new D.Board();
     var humanTiles = initialHumanTiles.slice();
     var aiTiles = initialAITiles.slice();
+    var boneyardCount = engine.hand.boneyard ?
+      (engine.hand.boneyard.length + engine.hand.moveHistory.filter(function(m) { return m.draw; }).length) : 0;
 
     var history = engine.hand.moveHistory;
     var end = Math.min(moveIndex, history.length - 1);
@@ -2195,6 +1910,16 @@
     for (var i = 0; i <= end; i++) {
       var move = history[i];
       if (move.pass) continue;
+      if (move.draw) {
+        // Draw: tile moved from boneyard to player's hand
+        boneyardCount--;
+        if (move.player === 'human') {
+          humanTiles.push(move.tile);
+        } else {
+          aiTiles.push(move.tile);
+        }
+        continue;
+      }
 
       board.place(move.tile, move.end);
 
@@ -2213,7 +1938,7 @@
       }
     }
 
-    return { board: board, humanTiles: humanTiles, aiTiles: aiTiles };
+    return { board: board, humanTiles: humanTiles, aiTiles: aiTiles, boneyardCount: boneyardCount };
   }
 
   function goBackward() {
@@ -2264,6 +1989,11 @@
     renderHumanHandFromState(state.humanTiles);
     renderAIHandFromState(state.aiTiles);
 
+    // Update boneyard count for review state
+    if (els.boneyardCount) {
+      els.boneyardCount.textContent = '(' + state.boneyardCount + ')';
+    }
+
     var historyLen = engine.hand.moveHistory.length;
     var statusText = '';
     if (viewIndex === -1) {
@@ -2273,6 +2003,8 @@
       var who = move.player === 'human' ? 'You' : 'AI';
       if (move.pass) {
         statusText = 'Move ' + (viewIndex + 1) + '/' + historyLen + ': ' + who + ' passed';
+      } else if (move.draw) {
+        statusText = 'Move ' + (viewIndex + 1) + '/' + historyLen + ': ' + who + ' drew ' + move.tile.toString();
       } else {
         statusText = 'Move ' + (viewIndex + 1) + '/' + historyLen + ': ' + who + ' played ' + move.tile.toString();
       }
@@ -2328,6 +2060,7 @@
     renderBoard();
     renderHumanHand();
     renderAIHand();
+    updateBoneyardCount();
     updateNavButtons();
 
     var history = engine.hand.moveHistory;
@@ -2467,6 +2200,7 @@
 
     for (var i = 0; i < analysis.length; i++) {
       var entry = analysis[i];
+      if (!entry.tileId) continue;
       var pill = document.createElement('span');
       var isBest = (entry.tileId === chosenTileId && entry.end === chosenEnd);
       pill.className = 'analysis-pill' + (isBest ? ' analysis-pill--best' : '');
