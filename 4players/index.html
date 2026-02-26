@@ -3,102 +3,195 @@
 
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#1a5c2a">
+  <meta name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#1a2c5a">
   <title>Dominos — 4 Players</title>
-  <style>
-    *,
-    *::before,
-    *::after {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-      background: #1a3a1a;
-      color: #e8dcc8;
-      min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 24px;
-    }
-
-    .card {
-      background: rgba(40, 80, 40, 0.6);
-      border-radius: 16px;
-      padding: 48px;
-      text-align: center;
-      max-width: 500px;
-    }
-
-    h1 {
-      color: #d4a843;
-      margin-bottom: 8px;
-    }
-
-    .subtitle {
-      color: #a8c8a0;
-      margin-bottom: 24px;
-    }
-
-    .coming-soon {
-      display: inline-block;
-      background: rgba(212, 168, 67, 0.15);
-      color: #d4a843;
-      border: 1px solid rgba(212, 168, 67, 0.3);
-      border-radius: 8px;
-      padding: 12px 24px;
-      font-size: 18px;
-      margin-bottom: 24px;
-    }
-
-    .description {
-      color: #8aaa80;
-      line-height: 1.6;
-      margin-bottom: 32px;
-    }
-
-    .nav-links {
-      display: flex;
-      gap: 12px;
-      flex-wrap: wrap;
-      justify-content: center;
-    }
-
-    .nav-links a {
-      color: #d4a843;
-      text-decoration: none;
-      padding: 8px 16px;
-      border: 1px solid rgba(212, 168, 67, 0.4);
-      border-radius: 8px;
-      transition: background 0.2s;
-    }
-
-    .nav-links a:hover {
-      background: rgba(212, 168, 67, 0.15);
-    }
-  </style>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style-board.css">
+  <link rel="icon" type="image/svg+xml" href="../icons/icon.svg">
+  <link rel="apple-touch-icon" href="../icons/icon-192.png">
 </head>
 
 <body>
-  <div class="card">
-    <h1>Dominos</h1>
-    <p class="subtitle">4 Players (Teams)</p>
-    <div class="coming-soon">Coming Soon</div>
-    <p class="description">
-      Classic 4-player team dominos. Partners sit across from each other.
-      7 tiles each, no boneyard. Coordinate with your partner to win.
-    </p>
-    <div class="nav-links">
-      <a href="../index.html">Standard (2P)</a>
-      <a href="../2players/index.html">Draw (2P)</a>
-      <a href="../3players/index.html">3 Players</a>
+  <div id="game-container">
+
+    <!-- Header / Scoreboard -->
+    <header id="header">
+      <h1 class="logo">Dominos <span class="logo-sub">4P</span></h1>
+      <div class="scores">
+        <div class="score-box">
+          <span class="score-label">You</span>
+          <span id="human-score" class="score-value">0</span>
+        </div>
+        <div class="score-box score-box--ai1">
+          <span class="score-label">AI-1</span>
+          <span id="ai1-score" class="score-value">0</span>
+        </div>
+        <div class="score-box score-box--ai2">
+          <span class="score-label">AI-2</span>
+          <span id="ai2-score" class="score-value">0</span>
+        </div>
+        <div class="score-box score-box--ai3">
+          <span class="score-label">AI-3</span>
+          <span id="ai3-score" class="score-value">0</span>
+        </div>
+        <div class="score-box hand-box">
+          <span class="score-label">Hand</span>
+          <span id="hand-number" class="score-value">#1</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- AI Hands -->
+    <div id="ai-hands-area">
+      <div id="ai1-hand-area" class="ai-hand-area">
+        <div class="hand-label">AI-1 <span id="ai1-tile-count" class="tile-count">(7)</span></div>
+        <div id="ai1-hand" class="hand-row hand-row--ai"></div>
+      </div>
+      <div id="ai2-hand-area" class="ai-hand-area">
+        <div class="hand-label">AI-2 <span id="ai2-tile-count" class="tile-count">(7)</span></div>
+        <div id="ai2-hand" class="hand-row hand-row--ai"></div>
+      </div>
+      <div id="ai3-hand-area" class="ai-hand-area">
+        <div class="hand-label">AI-3 <span id="ai3-tile-count" class="tile-count">(7)</span></div>
+        <div id="ai3-hand" class="hand-row hand-row--ai"></div>
+      </div>
+    </div>
+
+    <!-- Status Bar -->
+    <div id="status-bar">
+      <button id="nav-backward" class="btn btn-nav" style="display:none;" disabled>&laquo;</button>
+      <span id="status-message">Welcome</span>
+      <button id="nav-forward" class="btn btn-nav" style="display:none;" disabled>&raquo;</button>
+      <button id="pass-btn" class="btn btn-pass" style="display:none;">Pass</button>
+      <button id="undo-btn" class="btn btn-undo" style="display:none;">Undo</button>
+    </div>
+
+    <!-- Board -->
+    <div id="board-area">
+      <div id="board-left-marker" class="end-marker" style="display:none;">
+        <span class="end-arrow">&larr;</span>
+      </div>
+      <div id="board"></div>
+      <div id="board-right-marker" class="end-marker" style="display:none;">
+        <span class="end-arrow">&rarr;</span>
+      </div>
+    </div>
+
+    <!-- Current Turn Indicator -->
+    <div id="turn-indicator" style="display:none;">
+      <span id="turn-indicator-text"></span>
+    </div>
+
+    <!-- Human Hand -->
+    <div id="human-hand-area">
+      <div class="hand-label">Your Hand <span id="human-tile-count" class="tile-count">(7)</span></div>
+      <div id="human-hand" class="hand-row"></div>
     </div>
   </div>
+
+  <!-- Start Screen Overlay -->
+  <div id="start-overlay" class="overlay">
+    <div class="modal">
+      <h2>Dominos</h2>
+      <p class="subtitle" id="start-subtitle">4 Players &bull; Quick Game</p>
+      <div class="form-group">
+        <label>Difficulty</label>
+        <div class="radio-group">
+          <button class="btn btn-option" data-difficulty="easy">Easy</button>
+          <button class="btn btn-option active" data-difficulty="hard">Hard</button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>AI Mode</label>
+        <p class="subtitle" style="margin:4px 0 8px;font-size:0.75rem;opacity:0.7;">Coordinated: You+AI-3 vs AI-1+AI-2 (2v2 teams)</p>
+        <div class="radio-group">
+          <button class="btn btn-option active" data-aimode="independent">Independent</button>
+          <button class="btn btn-option" data-aimode="coordinated">Coordinated</button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label>Game Mode</label>
+        <div class="radio-group">
+          <button class="btn btn-option active" data-gamemode="quick">Quick Game</button>
+          <button class="btn btn-option" data-gamemode="match">Match</button>
+        </div>
+      </div>
+      <div class="form-group" id="match-points-group" style="display:none;">
+        <label>Match Points</label>
+        <div class="radio-group">
+          <button class="btn btn-option" data-matchpoints="1">1</button>
+          <button class="btn btn-option" data-matchpoints="50">50</button>
+          <button class="btn btn-option active" data-matchpoints="100">100</button>
+        </div>
+      </div>
+      <button id="start-btn" class="btn btn-primary">Start Game</button>
+      <div style="text-align:center;margin-top:12px;">
+        <a href="rules.html" style="color:#7ec8e3;font-size:0.8rem;opacity:0.7;text-decoration:none;">Game Rules &amp; AI Guide &rarr;</a>
+      </div>
+      <div class="form-group" style="margin-top:24px;">
+        <label>Other Modes</label>
+        <div class="radio-group">
+          <a href="../index.html" class="btn btn-option">Standard (2P)</a>
+          <a href="../2players/index.html" class="btn btn-option">Draw (2P)</a>
+          <a href="../3players/index.html" class="btn btn-option">3 Players</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Leader Choice Overlay -->
+  <div id="leader-overlay" class="overlay" style="display:none;">
+    <div class="modal">
+      <h2>Who Goes First?</h2>
+      <p class="subtitle">Choose who plays the first tile</p>
+      <div class="leader-buttons">
+        <button class="btn btn-primary" data-leader="human">I'll Lead</button>
+        <button class="btn btn-secondary" data-leader="ai1">AI-1 Leads</button>
+        <button class="btn btn-secondary" data-leader="ai3">AI-3 Leads</button>
+        <button class="btn btn-secondary" data-leader="ai2">AI-2 Leads</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hand Result Overlay -->
+  <div id="result-overlay" class="overlay" style="display:none;">
+    <div class="modal">
+      <h2 id="result-title">Round Over</h2>
+      <div id="result-body"></div>
+      <div class="modal-buttons">
+        <button id="review-hand-btn" class="btn btn-secondary">Review Moves</button>
+        <button id="next-hand-btn" class="btn btn-primary">Next Hand</button>
+        <button id="play-again-btn" class="btn btn-primary">Play Again</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Match Result Overlay -->
+  <div id="match-overlay" class="overlay" style="display:none;">
+    <div class="modal">
+      <h2 id="match-title">Match Over</h2>
+      <div id="match-body"></div>
+      <div class="modal-buttons">
+        <button id="review-match-btn" class="btn btn-secondary">Review Moves</button>
+        <button id="match-play-again-btn" class="btn btn-primary">Play Again</button>
+        <button id="new-game-btn" class="btn btn-secondary">New Game</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="game.js"></script>
+  <script src="ai.js"></script>
+  <script src="ui-board.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('./sw.js');
+    }
+  </script>
 </body>
 
 </html>

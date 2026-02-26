@@ -1,0 +1,717 @@
+// ============================================================
+// game.js — 4-Player Domino Game Engine (pure logic, no DOM)
+//
+// 28 tiles (including [0|0] with Ghost 13), 7 per player.
+// Seating: Human → AI-1 → AI-3 → AI-2 (partners sit across).
+// Teams (Coordinated): Human+AI-3 vs AI-1+AI-2
+// Block winner = lowest pip count (team combined in team mode).
+// Independent: winner gets sum of all opponents' pips.
+// Team: both winning team members get losing team's combined pips.
+// ============================================================
+
+window.Domino = window.Domino || {};
+
+(function (D) {
+  'use strict';
+
+  // --- Tile ---
+  class Tile {
+    constructor(low, high) {
+      this.low = Math.min(low, high);
+      this.high = Math.max(low, high);
+      this.id = this.low + '-' + this.high;
+    }
+
+    pipCount() {
+      return this.low + this.high;
+    }
+
+    pipCountWithGhost(allZeroSuitOnBoard) {
+      // Ghost 13: [0-0] counts as 13 when all 6 other zero-suit tiles are on the board
+      if (this.low === 0 && this.high === 0 && allZeroSuitOnBoard) {
+        return 13;
+      }
+      return this.pipCount();
+    }
+
+    matches(value) {
+      return this.low === value || this.high === value;
+    }
+
+    isDouble() {
+      return this.low === this.high;
+    }
+
+    otherSide(value) {
+      if (this.low === value) return this.high;
+      if (this.high === value) return this.low;
+      return null;
+    }
+
+    toString() {
+      return '[' + this.low + '|' + this.high + ']';
+    }
+  }
+
+  // --- Hand ---
+  class Hand {
+    constructor() {
+      this.tiles = [];
+    }
+
+    add(tile) {
+      this.tiles.push(tile);
+    }
+
+    remove(tile) {
+      var idx = this.tiles.indexOf(tile);
+      if (idx !== -1) this.tiles.splice(idx, 1);
+    }
+
+    count() {
+      return this.tiles.length;
+    }
+
+    isEmpty() {
+      return this.tiles.length === 0;
+    }
+
+    has(tile) {
+      return this.tiles.indexOf(tile) !== -1;
+    }
+
+    findById(id) {
+      for (var i = 0; i < this.tiles.length; i++) {
+        if (this.tiles[i].id === id) return this.tiles[i];
+      }
+      return null;
+    }
+
+    legalMoves(boardEnds) {
+      var moves = [];
+      if (!boardEnds || boardEnds.left === null) {
+        // Empty board — any tile, any orientation
+        for (var i = 0; i < this.tiles.length; i++) {
+          moves.push({ tile: this.tiles[i], end: 'left' });
+        }
+        return moves;
+      }
+      for (var i = 0; i < this.tiles.length; i++) {
+        var t = this.tiles[i];
+        var canLeft = t.matches(boardEnds.left);
+        var canRight = t.matches(boardEnds.right);
+        if (canLeft) moves.push({ tile: t, end: 'left' });
+        if (canRight && boardEnds.left !== boardEnds.right) {
+          moves.push({ tile: t, end: 'right' });
+        } else if (canRight && boardEnds.left === boardEnds.right && !canLeft) {
+          moves.push({ tile: t, end: 'right' });
+        }
+      }
+      return moves;
+    }
+
+    totalPips() {
+      var sum = 0;
+      for (var i = 0; i < this.tiles.length; i++) {
+        sum += this.tiles[i].pipCount();
+      }
+      return sum;
+    }
+
+    totalPipsWithGhost(board) {
+      // Check if all 6 zero-suit tiles ([0-1] through [0-6]) are on the board
+      var allZeroSuitOnBoard = false;
+      if (board && board.tiles && board.tiles.length > 0) {
+        var zeroCount = 0;
+        for (var i = 0; i < board.tiles.length; i++) {
+          var t = board.tiles[i].tile;
+          if (t && (t.low === 0 || t.high === 0) && !(t.low === 0 && t.high === 0)) {
+            zeroCount++;
+          }
+        }
+        allZeroSuitOnBoard = (zeroCount >= 6);
+      }
+      var sum = 0;
+      for (var i = 0; i < this.tiles.length; i++) {
+        sum += this.tiles[i].pipCountWithGhost(allZeroSuitOnBoard);
+      }
+      return sum;
+    }
+
+    clone() {
+      var h = new Hand();
+      for (var i = 0; i < this.tiles.length; i++) {
+        h.add(this.tiles[i]);
+      }
+      return h;
+    }
+  }
+
+  // --- Board ---
+  class Board {
+    constructor() {
+      this.tiles = [];       // placed tiles in order
+      this.leftEnd = null;
+      this.rightEnd = null;
+    }
+
+    isEmpty() {
+      return this.tiles.length === 0;
+    }
+
+    getEnds() {
+      return { left: this.leftEnd, right: this.rightEnd };
+    }
+
+    place(tile, end, player) {
+      var placement = { tile: tile, end: end, flipped: false, player: player || null };
+
+      if (this.isEmpty()) {
+        // First tile: low on left, high on right
+        this.leftEnd = tile.low;
+        this.rightEnd = tile.high;
+        placement.newLeftEnd = tile.low;
+        placement.newRightEnd = tile.high;
+        this.tiles.push(placement);
+        return placement;
+      }
+
+      if (end === 'left') {
+        var matchVal = this.leftEnd;
+        if (tile.high === matchVal) {
+          this.leftEnd = tile.low;
+          placement.flipped = false;
+        } else if (tile.low === matchVal) {
+          this.leftEnd = tile.high;
+          placement.flipped = true;
+        }
+        placement.newLeftEnd = this.leftEnd;
+        placement.newRightEnd = this.rightEnd;
+        this.tiles.unshift(placement);
+      } else {
+        var matchVal = this.rightEnd;
+        if (tile.low === matchVal) {
+          this.rightEnd = tile.high;
+          placement.flipped = false;
+        } else if (tile.high === matchVal) {
+          this.rightEnd = tile.low;
+          placement.flipped = true;
+        }
+        placement.newLeftEnd = this.leftEnd;
+        placement.newRightEnd = this.rightEnd;
+        this.tiles.push(placement);
+      }
+
+      return placement;
+    }
+
+    canMatch(value) {
+      return value === this.leftEnd || value === this.rightEnd;
+    }
+
+    clone() {
+      var b = new Board();
+      b.leftEnd = this.leftEnd;
+      b.rightEnd = this.rightEnd;
+      b.tiles = this.tiles.slice();
+      return b;
+    }
+  }
+
+  // --- Tile Set (28 tiles, including [0|0]) ---
+  function createTileSet() {
+    var tiles = [];
+    for (var i = 0; i <= 6; i++) {
+      for (var j = i; j <= 6; j++) {
+        tiles.push(new Tile(i, j));
+      }
+    }
+    return tiles; // 28 tiles
+  }
+
+  function shuffle(arr) {
+    for (var i = arr.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var tmp = arr[i];
+      arr[i] = arr[j];
+      arr[j] = tmp;
+    }
+    return arr;
+  }
+
+  // --- Player constants ---
+  // Seating order: partners sit across (Human+AI3, AI1+AI2)
+  var PLAYERS = ['human', 'ai1', 'ai3', 'ai2'];
+
+  function getNextPlayer(player) {
+    var idx = PLAYERS.indexOf(player);
+    return PLAYERS[(idx + 1) % 4];
+  }
+
+  function getOtherPlayers(player) {
+    return PLAYERS.filter(function (p) { return p !== player; });
+  }
+
+  // --- Team helpers ---
+  var TEAMS = {
+    human: { partner: 'ai3', team: 'A', enemies: ['ai1', 'ai2'] },
+    ai3:   { partner: 'human', team: 'A', enemies: ['ai1', 'ai2'] },
+    ai1:   { partner: 'ai2', team: 'B', enemies: ['human', 'ai3'] },
+    ai2:   { partner: 'ai1', team: 'B', enemies: ['human', 'ai3'] }
+  };
+
+  function getPartner(player) {
+    return TEAMS[player].partner;
+  }
+
+  function getTeamMembers(player) {
+    return [player, TEAMS[player].partner];
+  }
+
+  function getEnemies(player) {
+    return TEAMS[player].enemies;
+  }
+
+  function getTeamName(player) {
+    return TEAMS[player].team;
+  }
+
+  // --- GameEngine ---
+  class GameEngine {
+    constructor() {
+      this.matchScore = { human: 0, ai1: 0, ai2: 0, ai3: 0 };
+      this.targetScore = 100;
+      this.aiDifficulty = 'easy';
+      this.previousHandWinner = null;
+      this.handNumber = 0;
+      this.hand = null; // current HandState
+      this.gameMode = 'quick';
+      this.teamMode = false;
+    }
+
+    newMatch(difficulty, gameMode, teamMode) {
+      this.matchScore = { human: 0, ai1: 0, ai2: 0, ai3: 0 };
+      this.aiDifficulty = difficulty || 'easy';
+      this.gameMode = gameMode || 'quick';
+      this.teamMode = !!teamMode;
+      this.previousHandWinner = null;
+      this.handNumber = 0;
+    }
+
+    dealHand(leader) {
+      this.handNumber++;
+      var allTiles = shuffle(createTileSet());
+      var humanHand = new Hand();
+      var ai1Hand = new Hand();
+      var ai3Hand = new Hand();
+      var ai2Hand = new Hand();
+
+      // 7 tiles each = 28 total (all tiles dealt)
+      for (var i = 0; i < 7; i++) {
+        humanHand.add(allTiles[i]);
+      }
+      for (var i = 7; i < 14; i++) {
+        ai1Hand.add(allTiles[i]);
+      }
+      for (var i = 14; i < 21; i++) {
+        ai3Hand.add(allTiles[i]);
+      }
+      for (var i = 21; i < 28; i++) {
+        ai2Hand.add(allTiles[i]);
+      }
+
+      // Sort human hand for display
+      humanHand.tiles.sort(function (a, b) {
+        return a.low - b.low || a.high - b.high;
+      });
+
+      this.hand = {
+        humanHand: humanHand,
+        ai1Hand: ai1Hand,
+        ai2Hand: ai2Hand,
+        ai3Hand: ai3Hand,
+        board: new Board(),
+        currentPlayer: leader,
+        consecutivePasses: 0,
+        lastPlacer: null,
+        moveHistory: [],
+        passedValues: { human: [], ai1: [], ai2: [], ai3: [] }
+      };
+
+      return this.hand;
+    }
+
+    getHand(player) {
+      if (player === 'human') return this.hand.humanHand;
+      if (player === 'ai1') return this.hand.ai1Hand;
+      if (player === 'ai2') return this.hand.ai2Hand;
+      if (player === 'ai3') return this.hand.ai3Hand;
+      return null;
+    }
+
+    getNextPlayer(player) {
+      return getNextPlayer(player);
+    }
+
+    getOtherPlayers(player) {
+      return getOtherPlayers(player);
+    }
+
+    getLegalMoves(player) {
+      var hand = this.getHand(player);
+      return hand.legalMoves(this.hand.board.getEnds());
+    }
+
+    playTile(player, tile, end) {
+      var hand = this.getHand(player);
+
+      // Validate tile is in hand
+      if (!hand.has(tile)) return { error: 'Tile not in hand' };
+
+      // Validate legal move
+      var legal = this.getLegalMoves(player);
+      var isLegal = false;
+      for (var i = 0; i < legal.length; i++) {
+        if (legal[i].tile === tile && legal[i].end === end) {
+          isLegal = true;
+          break;
+        }
+      }
+      if (!isLegal) return { error: 'Illegal move' };
+
+      // Place tile
+      var placement = this.hand.board.place(tile, end, player);
+      hand.remove(tile);
+
+      // Record move
+      this.hand.moveHistory.push({
+        player: player,
+        tile: tile,
+        end: end,
+        boardEnds: this.hand.board.getEnds()
+      });
+
+      this.hand.lastPlacer = player;
+      this.hand.consecutivePasses = 0;
+
+      // Check hand end
+      var handEnd = this.checkHandEnd(player);
+
+      // Switch player
+      if (!handEnd) {
+        this.hand.currentPlayer = getNextPlayer(player);
+      }
+
+      return { success: true, placement: placement, handEnd: handEnd };
+    }
+
+    pass(player) {
+      // Record what values the player passed on
+      var ends = this.hand.board.getEnds();
+      if (ends.left !== null) {
+        var pv = this.hand.passedValues[player];
+        if (pv.indexOf(ends.left) === -1) pv.push(ends.left);
+        if (pv.indexOf(ends.right) === -1) pv.push(ends.right);
+      }
+
+      this.hand.consecutivePasses++;
+      this.hand.moveHistory.push({
+        player: player,
+        tile: null,
+        end: null,
+        pass: true,
+        boardEnds: this.hand.board.getEnds()
+      });
+
+      // Block: all 4 players passed consecutively
+      if (this.hand.consecutivePasses >= 4) {
+        return this.resolveBlock();
+      }
+
+      this.hand.currentPlayer = getNextPlayer(player);
+      return null;
+    }
+
+    checkHandEnd(lastPlayer) {
+      var hand = this.getHand(lastPlayer);
+
+      // Domino: player emptied their hand
+      if (hand.isEmpty()) {
+        return this.resolveDomino(lastPlayer);
+      }
+
+      // Immediate Lock: after placement, no player has legal moves
+      var ends = this.hand.board.getEnds();
+      var anyCanPlay = false;
+      for (var i = 0; i < PLAYERS.length; i++) {
+        var moves = this.getHand(PLAYERS[i]).legalMoves(ends);
+        if (moves.length > 0) {
+          anyCanPlay = true;
+          break;
+        }
+      }
+
+      if (!anyCanPlay) {
+        return this.resolveBlock();
+      }
+
+      return null;
+    }
+
+    checkGhost13Info(player) {
+      var hand = this.getHand(player);
+      var tile00 = hand.findById('0-0');
+      if (!tile00) return null;
+
+      // Count zero-suit tiles on board ([0-1] through [0-6])
+      var zeroCount = 0;
+      for (var i = 0; i < this.hand.board.tiles.length; i++) {
+        var t = this.hand.board.tiles[i].tile;
+        if (t && (t.low === 0 || t.high === 0) && !(t.low === 0 && t.high === 0)) {
+          zeroCount++;
+        }
+      }
+      if (zeroCount >= 6) {
+        return { player: player, triggered: true };
+      }
+      return { player: player, triggered: false };
+    }
+
+    resolveDomino(winner) {
+      var board = this.hand.board;
+
+      if (this.teamMode) {
+        // Team mode: both winning team members get losing team's combined pips
+        var enemies = getEnemies(winner);
+        var totalEnemyPips = 0;
+        var pipDetails = {};
+
+        for (var i = 0; i < PLAYERS.length; i++) {
+          var p = PLAYERS[i];
+          pipDetails[p] = this.getHand(p).totalPipsWithGhost(board);
+        }
+
+        for (var i = 0; i < enemies.length; i++) {
+          totalEnemyPips += pipDetails[enemies[i]];
+        }
+
+        var teamMembers = getTeamMembers(winner);
+        for (var i = 0; i < teamMembers.length; i++) {
+          this.matchScore[teamMembers[i]] += totalEnemyPips;
+        }
+
+        this.previousHandWinner = winner;
+        return {
+          type: 'domino',
+          winner: winner,
+          points: totalEnemyPips,
+          pipDetails: pipDetails,
+          teamWin: true,
+          teamMembers: teamMembers
+        };
+      } else {
+        // Independent mode: winner gets sum of all opponents' pips
+        var others = getOtherPlayers(winner);
+        var totalOpponentPips = 0;
+        var pipDetails = {};
+
+        for (var i = 0; i < others.length; i++) {
+          var pips = this.getHand(others[i]).totalPipsWithGhost(board);
+          pipDetails[others[i]] = pips;
+          totalOpponentPips += pips;
+        }
+
+        this.matchScore[winner] += totalOpponentPips;
+        this.previousHandWinner = winner;
+
+        return {
+          type: 'domino',
+          winner: winner,
+          points: totalOpponentPips,
+          pipDetails: pipDetails
+        };
+      }
+    }
+
+    resolveBlock() {
+      var board = this.hand.board;
+
+      if (this.teamMode) {
+        // Team mode: team with lowest combined pips wins
+        var teamAPips = this.getHand('human').totalPipsWithGhost(board) +
+                        this.getHand('ai3').totalPipsWithGhost(board);
+        var teamBPips = this.getHand('ai1').totalPipsWithGhost(board) +
+                        this.getHand('ai2').totalPipsWithGhost(board);
+
+        var pipCounts = {};
+        for (var i = 0; i < PLAYERS.length; i++) {
+          pipCounts[PLAYERS[i]] = this.getHand(PLAYERS[i]).totalPipsWithGhost(board);
+        }
+
+        var winningTeam, losingTeamPips, winningTeamPips;
+        var winner;
+
+        if (teamAPips < teamBPips) {
+          winningTeam = 'A';
+          winningTeamPips = teamAPips;
+          losingTeamPips = teamBPips;
+          // Winner is the team member with fewer pips
+          winner = (pipCounts.human <= pipCounts.ai3) ? 'human' : 'ai3';
+        } else if (teamBPips < teamAPips) {
+          winningTeam = 'B';
+          winningTeamPips = teamBPips;
+          losingTeamPips = teamAPips;
+          winner = (pipCounts.ai1 <= pipCounts.ai2) ? 'ai1' : 'ai2';
+        } else {
+          // Tie: first team in order wins (Team A)
+          winningTeam = 'A';
+          winningTeamPips = teamAPips;
+          losingTeamPips = teamBPips;
+          winner = (pipCounts.human <= pipCounts.ai3) ? 'human' : 'ai3';
+        }
+
+        var points = losingTeamPips - winningTeamPips;
+        var teamMembers = (winningTeam === 'A') ? ['human', 'ai3'] : ['ai1', 'ai2'];
+
+        for (var i = 0; i < teamMembers.length; i++) {
+          this.matchScore[teamMembers[i]] += points;
+        }
+
+        this.previousHandWinner = winner;
+
+        return {
+          type: 'block',
+          winner: winner,
+          points: points,
+          pipCounts: pipCounts,
+          teamWin: true,
+          teamMembers: teamMembers,
+          teamAPips: teamAPips,
+          teamBPips: teamBPips
+        };
+      } else {
+        // Independent mode: player with lowest pip count wins
+        var pipCounts = {};
+        var lowestPips = Infinity;
+        var winner = null;
+
+        for (var i = 0; i < PLAYERS.length; i++) {
+          var pips = this.getHand(PLAYERS[i]).totalPipsWithGhost(board);
+          pipCounts[PLAYERS[i]] = pips;
+          if (pips < lowestPips) {
+            lowestPips = pips;
+            winner = PLAYERS[i];
+          }
+        }
+
+        var others = getOtherPlayers(winner);
+        var totalOpponentPips = 0;
+        for (var i = 0; i < others.length; i++) {
+          totalOpponentPips += pipCounts[others[i]];
+        }
+
+        // Net scoring: winner gets opponents' pips minus own pips
+        var points = totalOpponentPips - pipCounts[winner];
+        this.matchScore[winner] += points;
+        this.previousHandWinner = winner;
+
+        return {
+          type: 'block',
+          winner: winner,
+          points: points,
+          pipCounts: pipCounts
+        };
+      }
+    }
+
+    undoLastMove() {
+      if (!this.hand || this.hand.moveHistory.length === 0) return null;
+
+      var move = this.hand.moveHistory.pop();
+
+      // Return tile to player's hand if it was a placement
+      if (!move.pass && move.tile) {
+        var hand = this.getHand(move.player);
+        hand.add(move.tile);
+        // Keep human hand sorted for display
+        if (move.player === 'human') {
+          hand.tiles.sort(function (a, b) {
+            return a.low - b.low || a.high - b.high;
+          });
+        }
+      }
+
+      // Rebuild board from remaining history
+      this.hand.board = new Board();
+      for (var i = 0; i < this.hand.moveHistory.length; i++) {
+        var m = this.hand.moveHistory[i];
+        if (!m.pass) {
+          this.hand.board.place(m.tile, m.end, m.player);
+        }
+      }
+
+      // Recalculate consecutivePasses
+      this.hand.consecutivePasses = 0;
+      for (var i = this.hand.moveHistory.length - 1; i >= 0; i--) {
+        if (this.hand.moveHistory[i].pass) {
+          this.hand.consecutivePasses++;
+        } else {
+          break;
+        }
+      }
+
+      // Recalculate lastPlacer
+      this.hand.lastPlacer = null;
+      for (var i = this.hand.moveHistory.length - 1; i >= 0; i--) {
+        if (!this.hand.moveHistory[i].pass) {
+          this.hand.lastPlacer = this.hand.moveHistory[i].player;
+          break;
+        }
+      }
+
+      // Restore current player to the undone move's player
+      this.hand.currentPlayer = move.player;
+
+      return move;
+    }
+
+    checkMatchEnd() {
+      if (this.gameMode === 'quick') {
+        // Single round — always ends after first hand
+        return this.previousHandWinner;
+      }
+      // Match mode — check if any player reached target score
+      for (var i = 0; i < PLAYERS.length; i++) {
+        if (this.matchScore[PLAYERS[i]] >= this.targetScore) {
+          return PLAYERS[i];
+        }
+      }
+      return null;
+    }
+
+    getPlayerLabel(player) {
+      if (player === 'human') return 'You';
+      if (player === 'ai1') return 'AI-1';
+      if (player === 'ai2') return 'AI-2';
+      if (player === 'ai3') return 'AI-3';
+      return player;
+    }
+  }
+
+  // Exports
+  D.Tile = Tile;
+  D.Hand = Hand;
+  D.Board = Board;
+  D.GameEngine = GameEngine;
+  D.createTileSet = createTileSet;
+  D.shuffle = shuffle;
+  D.PLAYERS = PLAYERS;
+  D.TEAMS = TEAMS;
+  D.getNextPlayer = getNextPlayer;
+  D.getOtherPlayers = getOtherPlayers;
+  D.getPartner = getPartner;
+  D.getTeamMembers = getTeamMembers;
+  D.getEnemies = getEnemies;
+  D.getTeamName = getTeamName;
+
+})(window.Domino);
