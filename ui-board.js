@@ -51,6 +51,34 @@
   var precomputedAIResult = null; // Cached worker result from deal-time dispatch
   var precomputeValid = false;    // Whether cached result is still usable
 
+  // --- Hint Worker State ---
+  var pendingHintRequest = false;  // true while waiting for Worker hint response
+  var hintRequestId = 0;           // monotonic counter to discard stale results
+
+  // --- Lazy-Load Legacy Engine ---
+  var oldAiLoaded = (typeof D.OldAIPlayer !== 'undefined'); // true if already loaded via <script>
+  var oldAiLoadCallbacks = null; // pending callbacks while loading
+
+  function ensureOldAiLoaded(callback) {
+    if (oldAiLoaded) { callback(); return; }
+    if (oldAiLoadCallbacks) { oldAiLoadCallbacks.push(callback); return; }
+    oldAiLoadCallbacks = [callback];
+    var script = document.createElement('script');
+    script.src = './ai-old.js';
+    script.onload = function () {
+      oldAiLoaded = true;
+      var cbs = oldAiLoadCallbacks;
+      oldAiLoadCallbacks = null;
+      for (var i = 0; i < cbs.length; i++) cbs[i]();
+    };
+    script.onerror = function () {
+      oldAiLoadCallbacks = null;
+      selectedEngine = 'new'; // fall back to new engine
+      callback();
+    };
+    document.body.appendChild(script);
+  }
+
   // --- Snake Layout State ---
   var currentLayout = [];     // cached layout for end marker positioning
   var currentBounds = null;   // bounding box of current layout
@@ -233,18 +261,24 @@
     engine = new D.GameEngine();
     engine.newMatch(difficulty);
     engine.targetScore = matchPoints;
-    if (selectedEngine === 'old') {
-      ai = new D.OldAIPlayer(difficulty);
-    } else {
-      ai = new D.AIPlayer(difficulty);
+
+    function proceed() {
+      els.startOverlay.style.display = 'none';
+      if (replayDeals.hands.length > 0) {
+        startHand(replayDeals.hands[0].leader);
+      } else {
+        showLeaderChoice();
+      }
     }
 
-    els.startOverlay.style.display = 'none';
-
-    if (replayDeals.hands.length > 0) {
-      startHand(replayDeals.hands[0].leader);
+    if (selectedEngine === 'old') {
+      ensureOldAiLoaded(function () {
+        ai = new D.OldAIPlayer(difficulty);
+        proceed();
+      });
     } else {
-      showLeaderChoice();
+      ai = new D.AIPlayer(difficulty);
+      proceed();
     }
   }
 
@@ -466,14 +500,21 @@
     engine = new D.GameEngine();
     engine.newMatch(difficulty);
     engine.targetScore = matchPoints;
-    if (selectedEngine === 'old') {
-      ai = new D.OldAIPlayer(difficulty);
-    } else {
-      ai = new D.AIPlayer(difficulty);
+
+    function proceed() {
+      els.startOverlay.style.display = 'none';
+      showLeaderChoice();
     }
 
-    els.startOverlay.style.display = 'none';
-    showLeaderChoice();
+    if (selectedEngine === 'old') {
+      ensureOldAiLoaded(function () {
+        ai = new D.OldAIPlayer(difficulty);
+        proceed();
+      });
+    } else {
+      ai = new D.AIPlayer(difficulty);
+      proceed();
+    }
   }
 
   function showLeaderChoice() {
@@ -562,9 +603,11 @@
   function onUndo() {
     if (isProcessing) return;
 
-    // Invalidate any precomputed AI result
+    // Invalidate any precomputed AI result and in-flight hints
     precomputedAIResult = null;
     precomputeValid = false;
+    hintRequestId++;
+    pendingHintRequest = false;
 
     if (isReviewing) {
       undoFromReview();
@@ -692,7 +735,9 @@
   }
 
   // --- Human Hint: AI-recommended moves for human ---
-  function computeHumanHint() {
+
+  // Sync fallback (for file:// protocol or Legacy engine)
+  function computeHumanHintSync() {
     if (difficulty !== 'hard') return null;
     var legalMoves = engine.getLegalMoves('human');
     if (legalMoves.length <= 1) return null;
@@ -714,6 +759,80 @@
     return result;
   }
 
+  // Async hint via Worker (non-blocking, uses WASM)
+  function requestHumanHint() {
+    if (difficulty !== 'hard') return;
+    var legalMoves = engine.getLegalMoves('human');
+    if (legalMoves.length <= 1) { clearHint(); return; }
+
+    // No Worker or Legacy engine — fall back to sync
+    if (!aiWorker || selectedEngine !== 'new') {
+      var hint = computeHumanHintSync();
+      if (hint && hint.analysis && hint.analysis.length > 0) {
+        renderHint(hint.analysis);
+      } else {
+        clearHint();
+      }
+      return;
+    }
+
+    // Show "Computing…" placeholder
+    pendingHintRequest = true;
+    var thisRequestId = ++hintRequestId;
+    renderHintComputing();
+
+    // Build Worker message with hands swapped (human↔AI)
+    var hand = engine.hand;
+    var board = hand.board;
+    var msg = {
+      aiTiles: hand.humanHand.tiles.map(function (t) { return { low: t.low, high: t.high }; }),
+      humanTiles: hand.aiHand.tiles.map(function (t) { return { low: t.low, high: t.high }; }),
+      left: board.isEmpty() ? null : board.leftEnd,
+      right: board.isEmpty() ? null : board.rightEnd,
+      boardEmpty: board.isEmpty(),
+      moveHistory: hand.moveHistory.map(function (m) {
+        return {
+          player: m.player === 'ai' ? 'human' : 'ai',
+          tileLow: m.tile ? m.tile.low : null,
+          tileHigh: m.tile ? m.tile.high : null,
+          end: m.end,
+          pass: !!m.pass,
+          boardLeft: m.boardEnds ? m.boardEnds.left : null,
+          boardRight: m.boardEnds ? m.boardEnds.right : null
+        };
+      }),
+      legalMoves: legalMoves.map(function (m) {
+        return { tileLow: m.tile.low, tileHigh: m.tile.high, end: m.end };
+      }),
+      matchScore: engine.matchScore
+        ? { ai: engine.matchScore.human, human: engine.matchScore.ai }
+        : undefined
+    };
+
+    aiWorker.onmessage = function (e) {
+      if (thisRequestId !== hintRequestId) return; // stale — discard
+      pendingHintRequest = false;
+      var result = e.data;
+      if (result && result.analysis && result.analysis.length > 0) {
+        renderHint(result.analysis);
+      } else {
+        clearHint();
+      }
+    };
+    aiWorker.onerror = function () {
+      if (thisRequestId !== hintRequestId) return;
+      pendingHintRequest = false;
+      clearHint();
+    };
+    aiWorker.postMessage(msg);
+  }
+
+  function renderHintComputing() {
+    if (!els.hintList || !els.hintPanel) return;
+    els.hintList.innerHTML = '<span class="hint-computing">Computing\u2026</span>';
+    els.hintPanel.style.display = 'block';
+  }
+
   function updateHintsToggle() {
     if (!els.hintsToggleBtn) return;
     els.hintsToggleBtn.textContent = showHints ? 'Hints: On' : 'Hints: Off';
@@ -733,13 +852,10 @@
       var legalMoves = engine.getLegalMoves('human');
       if (engine.hand.currentPlayer === 'human' && legalMoves.length > 0) {
         if (showHints) {
-          var hint = computeHumanHint();
-          if (hint && hint.analysis && hint.analysis.length > 0) {
-            renderHint(hint.analysis);
-          } else {
-            clearHint();
-          }
+          requestHumanHint();
         } else {
+          hintRequestId++; // invalidate any in-flight hint request
+          pendingHintRequest = false;
           clearHint();
         }
       }
@@ -768,12 +884,7 @@
 
     // Show AI-recommended moves for human (if hints enabled)
     if (showHints) {
-      var hint = computeHumanHint();
-      if (hint && hint.analysis && hint.analysis.length > 0) {
-        renderHint(hint.analysis);
-      } else {
-        clearHint();
-      }
+      requestHumanHint();
     } else {
       clearHint();
     }
@@ -825,6 +936,8 @@
     if (!move) return;
 
     isProcessing = true;
+    hintRequestId++; // cancel any in-flight hint
+    pendingHintRequest = false;
     hideEndMarkers();
 
     var result = engine.playTile('human', move.tile, move.end);
@@ -865,6 +978,8 @@
   function onPassClicked() {
     if (isProcessing || isReviewing) return;
     isProcessing = true;
+    hintRequestId++; // cancel any in-flight hint
+    pendingHintRequest = false;
     els.passBtn.style.display = 'none';
     els.undoBtn.style.display = 'none';
 

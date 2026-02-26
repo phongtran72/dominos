@@ -170,14 +170,28 @@
 
   var TT_SIZE = 1 << 22; // 4,194,304 entries (~40MB total)
   var TT_MASK = TT_SIZE - 1;
-  var ttHash   = new Int32Array(TT_SIZE);
-  var ttDepth  = new Int8Array(TT_SIZE);
-  var ttFlag   = new Uint8Array(TT_SIZE);  // 0=empty, 1=EXACT, 2=LOWER, 3=UPPER
-  var ttValue  = new Int16Array(TT_SIZE);
-  var ttBestIdx = new Int8Array(TT_SIZE);
-  var ttBestEnd = new Int8Array(TT_SIZE);
-  var ttGen    = new Uint8Array(TT_SIZE);
+  // Deferred allocation: TT arrays created on first chooseMoveHard() call
+  var ttHash   = null;
+  var ttDepth  = null;
+  var ttFlag   = null;
+  var ttValue  = null;
+  var ttBestIdx = null;
+  var ttBestEnd = null;
+  var ttGen    = null;
   var ttGeneration = 0;
+  var ttAllocated = false;
+
+  function ttEnsureAllocated() {
+    if (ttAllocated) return;
+    ttHash    = new Int32Array(TT_SIZE);
+    ttDepth   = new Int8Array(TT_SIZE);
+    ttFlag    = new Uint8Array(TT_SIZE);
+    ttValue   = new Int16Array(TT_SIZE);
+    ttBestIdx = new Int8Array(TT_SIZE);
+    ttBestEnd = new Int8Array(TT_SIZE);
+    ttGen     = new Uint8Array(TT_SIZE);
+    ttAllocated = true;
+  }
 
   var TT_EXACT = 1, TT_LOWER = 2, TT_UPPER = 3;
 
@@ -991,6 +1005,7 @@
     }
 
     chooseMoveHard(legalMoves, engine) {
+      ttEnsureAllocated(); // Allocate TT on first use (deferred from page load)
       var hand = engine.hand;
       var board = hand.board;
 
