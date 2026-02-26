@@ -35,6 +35,10 @@
           <span class="score-label">AI-2</span>
           <span id="ai2-score" class="score-value">0</span>
         </div>
+        <div class="score-box hand-box">
+          <span class="score-label">Hand</span>
+          <span id="hand-number" class="score-value">#1</span>
+        </div>
       </div>
     </header>
 
@@ -56,6 +60,7 @@
       <span id="status-message">Welcome</span>
       <button id="nav-forward" class="btn btn-nav" style="display:none;" disabled>&raquo;</button>
       <button id="pass-btn" class="btn btn-pass" style="display:none;">Pass</button>
+      <button id="undo-btn" class="btn btn-undo" style="display:none;">Undo</button>
     </div>
 
     <!-- Board -->
@@ -111,7 +116,15 @@
         <label>Game Mode</label>
         <div class="radio-group">
           <button class="btn btn-option active" data-gamemode="quick">Quick Game</button>
-          <button class="btn btn-option" data-gamemode="match" disabled title="Coming soon">Match to 100</button>
+          <button class="btn btn-option" data-gamemode="match">Match</button>
+        </div>
+      </div>
+      <div class="form-group" id="match-points-group" style="display:none;">
+        <label>Match Points</label>
+        <div class="radio-group">
+          <button class="btn btn-option" data-matchpoints="1">1</button>
+          <button class="btn btn-option" data-matchpoints="50">50</button>
+          <button class="btn btn-option active" data-matchpoints="100">100</button>
         </div>
       </div>
       <button id="start-btn" class="btn btn-primary">Start Game</button>
@@ -146,7 +159,21 @@
       <div id="result-body"></div>
       <div class="modal-buttons">
         <button id="review-hand-btn" class="btn btn-secondary">Review Moves</button>
+        <button id="next-hand-btn" class="btn btn-primary">Next Hand</button>
         <button id="play-again-btn" class="btn btn-primary">Play Again</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Match Result Overlay -->
+  <div id="match-overlay" class="overlay" style="display:none;">
+    <div class="modal">
+      <h2 id="match-title">Match Over</h2>
+      <div id="match-body"></div>
+      <div class="modal-buttons">
+        <button id="review-match-btn" class="btn btn-secondary">Review Moves</button>
+        <button id="match-play-again-btn" class="btn btn-primary">Play Again</button>
+        <button id="new-game-btn" class="btn btn-secondary">New Game</button>
       </div>
     </div>
   </div>

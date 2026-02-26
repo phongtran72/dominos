@@ -455,12 +455,63 @@ window.Domino = window.Domino || {};
       };
     }
 
+    undoLastMove() {
+      if (!this.hand || this.hand.moveHistory.length === 0) return null;
+
+      var move = this.hand.moveHistory.pop();
+
+      // Return tile to player's hand if it was a placement
+      if (!move.pass && move.tile) {
+        var hand = this.getHand(move.player);
+        hand.add(move.tile);
+        // Keep human hand sorted for display
+        if (move.player === 'human') {
+          hand.tiles.sort(function (a, b) {
+            return a.low - b.low || a.high - b.high;
+          });
+        }
+      }
+
+      // Rebuild board from remaining history
+      this.hand.board = new Board();
+      for (var i = 0; i < this.hand.moveHistory.length; i++) {
+        var m = this.hand.moveHistory[i];
+        if (!m.pass) {
+          this.hand.board.place(m.tile, m.end);
+        }
+      }
+
+      // Recalculate consecutivePasses
+      this.hand.consecutivePasses = 0;
+      for (var i = this.hand.moveHistory.length - 1; i >= 0; i--) {
+        if (this.hand.moveHistory[i].pass) {
+          this.hand.consecutivePasses++;
+        } else {
+          break;
+        }
+      }
+
+      // Recalculate lastPlacer
+      this.hand.lastPlacer = null;
+      for (var i = this.hand.moveHistory.length - 1; i >= 0; i--) {
+        if (!this.hand.moveHistory[i].pass) {
+          this.hand.lastPlacer = this.hand.moveHistory[i].player;
+          break;
+        }
+      }
+
+      // Restore current player to the undone move's player
+      this.hand.currentPlayer = move.player;
+
+      return move;
+    }
+
     checkMatchEnd() {
       if (this.gameMode === 'quick') {
         // Single round — always ends after first hand
         return this.previousHandWinner;
       }
-      // Match mode (placeholder)
+      // Match mode — check if any player reached target score
       for (var i = 0; i < PLAYERS.length; i++) {
         if (this.matchScore[PLAYERS[i]] >= this.targetScore) {
           return PLAYERS[i];

@@ -34,6 +34,7 @@
     var difficulty = 'hard';
     var gameMode = 'quick';
     var aiMode = 'independent';
+    var matchPoints = 100;
     var isProcessing = false;
 
     // --- History Navigation ---
@@ -79,11 +80,17 @@
         els.turnIndicator = document.getElementById('turn-indicator');
         els.turnIndicatorText = document.getElementById('turn-indicator-text');
 
+        els.undoBtn = document.getElementById('undo-btn');
+        els.handNumber = document.getElementById('hand-number');
+
         els.startOverlay = document.getElementById('start-overlay');
         els.leaderOverlay = document.getElementById('leader-overlay');
         els.resultOverlay = document.getElementById('result-overlay');
         els.resultTitle = document.getElementById('result-title');
         els.resultBody = document.getElementById('result-body');
+        els.matchOverlay = document.getElementById('match-overlay');
+        els.matchTitle = document.getElementById('match-title');
+        els.matchBody = document.getElementById('match-body');
 
         // Move end markers inside #board
         els.board.appendChild(els.boardLeftMarker);
@@ -113,14 +120,36 @@
             });
         }
 
-        // Game mode buttons (placeholder — only quick works)
+        // Game mode buttons
         var modeBtns = document.querySelectorAll('[data-gamemode]');
+        var matchPointsGroup = document.getElementById('match-points-group');
+        var startSubtitle = document.getElementById('start-subtitle');
         for (var i = 0; i < modeBtns.length; i++) {
             modeBtns[i].addEventListener('click', function () {
-                if (this.disabled) return;
                 for (var j = 0; j < modeBtns.length; j++) modeBtns[j].classList.remove('active');
                 this.classList.add('active');
                 gameMode = this.getAttribute('data-gamemode');
+                if (matchPointsGroup) {
+                    matchPointsGroup.style.display = (gameMode === 'match') ? '' : 'none';
+                }
+                if (startSubtitle) {
+                    startSubtitle.textContent = gameMode === 'match'
+                        ? '3 Players \u2022 First to ' + matchPoints
+                        : '3 Players \u2022 Quick Game';
+                }
+            });
+        }
+
+        // Match points buttons
+        var mpBtns = document.querySelectorAll('[data-matchpoints]');
+        for (var i = 0; i < mpBtns.length; i++) {
+            mpBtns[i].addEventListener('click', function () {
+                for (var j = 0; j < mpBtns.length; j++) mpBtns[j].classList.remove('active');
+                this.classList.add('active');
+                matchPoints = parseInt(this.getAttribute('data-matchpoints'), 10);
+                if (startSubtitle) {
+                    startSubtitle.textContent = '3 Players \u2022 First to ' + matchPoints;
+                }
             });
         }
 
@@ -156,15 +185,33 @@
         els.navBackward.addEventListener('click', goBackward);
         els.navForward.addEventListener('click', goForward);
 
+        // Undo button
+        els.undoBtn.addEventListener('click', onUndo);
+
         // Review & Play Again
         document.getElementById('review-hand-btn').addEventListener('click', onReviewHand);
         document.getElementById('play-again-btn').addEventListener('click', onPlayAgain);
+
+        // Match overlay buttons
+        document.getElementById('review-match-btn').addEventListener('click', function () {
+            els.matchOverlay.style.display = 'none';
+            onReviewHand();
+        });
+        document.getElementById('match-play-again-btn').addEventListener('click', function () {
+            els.matchOverlay.style.display = 'none';
+            onStartMatch();
+        });
+        document.getElementById('new-game-btn').addEventListener('click', function () {
+            els.matchOverlay.style.display = 'none';
+            els.startOverlay.style.display = 'flex';
+        });
     }
 
     // ---- Start Screen ----
     function onStartMatch() {
         engine = new D.GameEngine();
         engine.newMatch(difficulty, gameMode);
+        engine.targetScore = matchPoints;
         var teamMode = (aiMode === 'coordinated');
         ai1 = new D.AIPlayer(difficulty, 'ai1', teamMode);
         ai2 = new D.AIPlayer(difficulty, 'ai2', teamMode);
@@ -207,6 +254,12 @@
         renderBoard();
         hideEndMarkers();
         updateNavButtons();
+        updateUndoButton();
+
+        // Update hand number
+        if (els.handNumber) {
+            els.handNumber.textContent = '#' + engine.handNumber;
+        }
 
         beginTurn(leader);
     }
@@ -252,6 +305,7 @@
         setStatus('Your turn — select a tile to play.');
         renderHumanHand();
         updateNavButtons();
+        updateUndoButton();
     }
 
     function onTileClicked(tile) {
@@ -338,6 +392,115 @@
         isProcessing = false;
         var nextPlayer = engine.hand.currentPlayer;
         beginTurn(nextPlayer);
+    }
+
+    // ---- Undo ----
+    function canUndo() {
+        if (!engine || !engine.hand) return false;
+        if (isProcessing) return false;
+        if (handOver) return false;
+        var history = engine.hand.moveHistory;
+        for (var i = 0; i < history.length; i++) {
+            if (history[i].player === 'human') return true;
+        }
+        return false;
+    }
+
+    function onUndo() {
+        if (isProcessing) return;
+
+        if (isReviewing) {
+            undoFromReview();
+            return;
+        }
+
+        if (!canUndo()) return;
+
+        var history = engine.hand.moveHistory;
+        var undoneHumanMove = false;
+        while (history.length > 0 && !undoneHumanMove) {
+            var lastMove = history[history.length - 1];
+            if (lastMove.player === 'human') {
+                engine.undoLastMove();
+                undoneHumanMove = true;
+            } else {
+                engine.undoLastMove();
+            }
+        }
+
+        if (!undoneHumanMove) return;
+
+        selectedTile = null;
+        selectedMoves = [];
+        lastAIAnalysis = null;
+
+        renderBoard();
+        renderHumanHand();
+        renderAIHand('ai1');
+        renderAIHand('ai2');
+        updateScoreboard();
+        hideEndMarkers();
+        clearAnalysis();
+
+        if (engine.hand.currentPlayer === 'human') {
+            startHumanTurn();
+        } else {
+            var label = engine.getPlayerLabel(engine.hand.currentPlayer);
+            setStatus(label + ' is thinking...');
+            disableHumanHand();
+            updateNavButtons();
+            updateUndoButton();
+            setTimeout(function () { executeAITurn(engine.hand.currentPlayer); }, 500);
+        }
+    }
+
+    function undoFromReview() {
+        var history = engine.hand.moveHistory;
+        var keepCount = viewIndex + 1;
+        if (keepCount < 0) keepCount = 0;
+
+        while (history.length > keepCount) {
+            engine.undoLastMove();
+        }
+
+        viewIndex = -1;
+        isReviewing = false;
+        handOver = false;
+        els.statusMessage.classList.remove('reviewing');
+
+        selectedTile = null;
+        selectedMoves = [];
+        lastAIAnalysis = null;
+
+        renderBoard();
+        renderHumanHand();
+        renderAIHand('ai1');
+        renderAIHand('ai2');
+        updateScoreboard();
+        hideEndMarkers();
+        clearAnalysis();
+
+        if (engine.hand.currentPlayer === 'human') {
+            startHumanTurn();
+        } else {
+            var label = engine.getPlayerLabel(engine.hand.currentPlayer);
+            setStatus(label + ' is thinking...');
+            disableHumanHand();
+            updateNavButtons();
+            updateUndoButton();
+            setTimeout(function () { executeAITurn(engine.hand.currentPlayer); }, 500);
+        }
+    }
+
+    function updateUndoButton() {
+        if (!els.undoBtn) return;
+        if (isReviewing) {
+            els.undoBtn.style.display = (viewIndex >= 0) ? 'inline-block' : 'none';
+        } else if (canUndo()) {
+            els.undoBtn.style.display = 'inline-block';
+        } else {
+            els.undoBtn.style.display = 'none';
+        }
     }
 
     // ---- AI Turn ----
@@ -460,8 +623,34 @@
         els.resultTitle.textContent = title;
         els.resultBody.innerHTML = body;
 
-        // Set button text
-        document.getElementById('play-again-btn').textContent = 'Play Again';
+        updateUndoButton();
+
+        // Handle match flow
+        var nextHandBtn = document.getElementById('next-hand-btn');
+        var playAgainBtn = document.getElementById('play-again-btn');
+        var matchWinner = engine.checkMatchEnd();
+
+        if (gameMode === 'match') {
+            if (matchWinner) {
+                nextHandBtn.textContent = 'See Results';
+                nextHandBtn.onclick = function () {
+                    els.resultOverlay.style.display = 'none';
+                    showMatchResult(matchWinner);
+                };
+                nextHandBtn.style.display = '';
+                playAgainBtn.style.display = 'none';
+            } else {
+                nextHandBtn.textContent = 'Next Hand';
+                nextHandBtn.onclick = onNextHand;
+                nextHandBtn.style.display = '';
+                playAgainBtn.style.display = 'none';
+            }
+        } else {
+            // Quick mode — no next hand, just play again
+            nextHandBtn.style.display = 'none';
+            playAgainBtn.style.display = '';
+            playAgainBtn.textContent = 'Play Again';
+        }
 
         els.resultOverlay.style.display = 'flex';
     }
@@ -471,6 +660,23 @@
         var historyLen = engine.hand.moveHistory.length;
         viewIndex = historyLen - 1;
         enterReviewMode();
+    }
+
+    function onNextHand() {
+        els.resultOverlay.style.display = 'none';
+        showLeaderChoice();
+    }
+
+    function showMatchResult(winner) {
+        var winnerLabel = engine.getPlayerLabel(winner);
+        els.matchTitle.textContent = winnerLabel + (winner === 'human' ? ' Win!' : ' Wins!');
+        els.matchBody.innerHTML =
+            '<div style="font-size:1.1rem;text-align:center;margin-bottom:8px;">Final Score</div>' +
+            '<div style="text-align:center;font-size:1.3rem;font-weight:700;color:#f0d060;">You: ' +
+            engine.matchScore.human + ' &mdash; AI-1: ' + engine.matchScore.ai1 +
+            ' &mdash; AI-2: ' + engine.matchScore.ai2 + '</div>' +
+            '<div style="text-align:center;margin-top:8px;opacity:0.7;">Hands played: ' + engine.handNumber + '</div>';
+        els.matchOverlay.style.display = 'flex';
     }
 
     function onPlayAgain() {
@@ -994,6 +1200,7 @@
         els.passBtn.style.display = 'none';
         hideEndMarkers();
         updateNavButtons();
+        updateUndoButton();
     }
 
     function exitReviewMode() {
