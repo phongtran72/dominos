@@ -1,5 +1,5 @@
 // Service Worker — offline caching for Dominos PWA (2-Player Draw variant)
-var CACHE_NAME = 'dominos-draw-v5';
+var CACHE_NAME = 'dominos-draw-v6';
 var ASSETS = [
   './',
   './index.html',

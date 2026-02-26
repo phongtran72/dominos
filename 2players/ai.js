@@ -1,12 +1,16 @@
 // ============================================================
 // ai.js — ENHANCED AI for Draw Variant (Imperfect Information)
 //
-// 5 strategic advantages over human:
+// 9 strategic advantages over human:
 //   1. Perfect tile tracking (knows exactly which tiles are unseen)
 //   2. Bayesian inference (deduces opponent hand from draw/pass)
 //   3. Endpoint locking (forces opponent to draw on values they lack)
 //   4. Determinization (Monte Carlo sampling of possible hands)
 //   5. Draw event analysis (extracts max info from each draw cycle)
+//   6. Draw-forcing (prefer board ends with few unseen matches)
+//   7. Boneyard depletion aggression (scale up as boneyard shrinks)
+//   8. Bloated hand exploitation (steer toward blocks when human drew many)
+//   9. Proactive scarcity (dominate suits early to create future locks)
 //
 // Easy: random legal move
 // Hard: full strategic engine with all advantages
@@ -366,6 +370,92 @@
           valueCoverage[remainingTiles[i].high] = true;
         }
         score += Object.keys(valueCoverage).length * 1;
+      }
+
+      // === Advantage #6: Draw-forcing ===
+      // Even without inference, prefer board ends where few unseen tiles match.
+      // Fewer unseen matches = higher chance human must draw.
+      // This works from turn 1 — no inference needed.
+      if (newEnd !== null) {
+        var unseenTiles = tracker.getUnseenTiles();
+        var unseenMatchingNewEnd = 0;
+        for (var ui = 0; ui < unseenTiles.length; ui++) {
+          var parts = unseenTiles[ui].split('-');
+          var lo = parseInt(parts[0]);
+          var hi = parseInt(parts[1]);
+          if (lo === newEnd || hi === newEnd) unseenMatchingNewEnd++;
+        }
+        // Max unseen matching a value = ~6. Fewer = better for AI.
+        // Bonus: (6 - matching) * weight. If only 1 unseen tile matches, big bonus.
+        var drawForceBonus = Math.max(0, 5 - unseenMatchingNewEnd) * 3;
+        score += drawForceBonus;
+      }
+
+      // === Advantage #7: Boneyard depletion aggression ===
+      // As boneyard shrinks, scarcity and locking become more powerful.
+      // Scale up key heuristics based on how empty the boneyard is.
+      var boneyardSize = boneyard.length;
+      var boneyardTotal = 10; // 28 - 9 - 9 = 10 tiles in boneyard at start
+      if (boneyardSize < boneyardTotal && newEnd !== null) {
+        // depletionFactor: 0.0 (full boneyard) to 1.0 (empty)
+        var depletionFactor = 1 - (boneyardSize / boneyardTotal);
+        // Amplify scarcity + draw-forcing as boneyard empties
+        // At empty boneyard: up to +10 extra on scarce ends
+        var knownForValue = 0;
+        for (var v = 0; v <= 6; v++) {
+          var id = Math.min(newEnd, v) + '-' + Math.max(newEnd, v);
+          if (tracker.tileLocation[id] === 'ai' || tracker.tileLocation[id] === 'board') {
+            knownForValue++;
+          }
+        }
+        score += knownForValue * depletionFactor * 3;
+
+        // Stronger endpoint locking when boneyard low/empty
+        if (tracker.humanLacks(newEnd)) {
+          score += depletionFactor * 15;
+        }
+      }
+
+      // === Advantage #8: Bloated hand exploitation ===
+      // If human has drawn many tiles (hand > 9), they have more pips.
+      // Steer toward blocks / tight board positions.
+      if (newEnd !== null && tracker.humanHandSize > 9) {
+        var humanBloat = tracker.humanHandSize - 9; // how many extra tiles
+        // Count unseen tiles matching board ends (tightness measure)
+        var unseenAll = tracker.getUnseenTiles();
+        var matchingEnds = 0;
+        var otherEnd = this.getOtherBoardEnd(end, board, tile);
+        for (var ui = 0; ui < unseenAll.length; ui++) {
+          var parts = unseenAll[ui].split('-');
+          var lo = parseInt(parts[0]);
+          var hi = parseInt(parts[1]);
+          if (lo === newEnd || hi === newEnd) matchingEnds++;
+          if (otherEnd !== null && (lo === otherEnd || hi === otherEnd)) matchingEnds++;
+        }
+        // Tighter board = fewer matching = closer to block
+        var tightness = Math.max(0, 8 - matchingEnds);
+        // Bonus scales with how bloated human's hand is
+        score += tightness * Math.min(humanBloat, 5) * 1.5;
+      }
+
+      // === Advantage #9: Proactive scarcity (suit domination) ===
+      // Prefer playing tiles from suits we dominate (own most tiles of that value).
+      // This depletes the suit, making future board ends harder for human.
+      if (newEnd !== null) {
+        // Count how many tiles with newEnd value the AI currently holds
+        var aiHoldsWithNewEnd = 0;
+        for (var i = 0; i < remainingTiles.length; i++) {
+          if (remainingTiles[i].low === newEnd || remainingTiles[i].high === newEnd) {
+            aiHoldsWithNewEnd++;
+          }
+        }
+        // If AI holds 3+ tiles of this value, it dominates the suit
+        // Leaving this value on the board means AI can always play, human often can't
+        if (aiHoldsWithNewEnd >= 3) {
+          score += 10;
+        } else if (aiHoldsWithNewEnd >= 2) {
+          score += 5;
+        }
       }
 
       return score;
