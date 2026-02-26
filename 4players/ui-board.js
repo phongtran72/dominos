@@ -157,11 +157,21 @@
 
         // AI mode buttons
         var aiModeBtns = document.querySelectorAll('[data-aimode]');
+        var aiModeSubtitle = document.getElementById('ai-mode-subtitle');
         for (var i = 0; i < aiModeBtns.length; i++) {
             aiModeBtns[i].addEventListener('click', function () {
                 for (var j = 0; j < aiModeBtns.length; j++) aiModeBtns[j].classList.remove('active');
                 this.classList.add('active');
                 aiMode = this.getAttribute('data-aimode');
+                if (aiModeSubtitle) {
+                    if (aiMode === '1v3') {
+                        aiModeSubtitle.textContent = 'You vs AI-1 + AI-2 + AI-3 (1v3 teams)';
+                    } else if (aiMode === '2v2') {
+                        aiModeSubtitle.textContent = 'You + AI-3 vs AI-1 + AI-2 (2v2 teams)';
+                    } else {
+                        aiModeSubtitle.textContent = 'Each AI plays for itself';
+                    }
+                }
             });
         }
 
@@ -212,12 +222,13 @@
     // ---- Start Screen ----
     function onStartMatch() {
         engine = new D.GameEngine();
-        var teamMode = (aiMode === 'coordinated');
-        engine.newMatch(difficulty, gameMode, teamMode);
+        var teamMode = (aiMode === '1v3' || aiMode === '2v2');
+        var teamConfig = teamMode ? aiMode : null;
+        engine.newMatch(difficulty, gameMode, teamMode, teamConfig);
         engine.targetScore = matchPoints;
-        ai1 = new D.AIPlayer(difficulty, 'ai1', teamMode);
-        ai2 = new D.AIPlayer(difficulty, 'ai2', teamMode);
-        ai3 = new D.AIPlayer(difficulty, 'ai3', teamMode);
+        ai1 = new D.AIPlayer(difficulty, 'ai1', teamMode, teamConfig);
+        ai2 = new D.AIPlayer(difficulty, 'ai2', teamMode, teamConfig);
+        ai3 = new D.AIPlayer(difficulty, 'ai3', teamMode, teamConfig);
 
         els.startOverlay.style.display = 'none';
         showLeaderChoice();
@@ -580,10 +591,13 @@
         if (result.type === 'domino') {
             var winnerLabel = engine.getPlayerLabel(result.winner);
             if (result.teamWin) {
-                var partnerLabel = engine.getPlayerLabel(D.getPartner(result.winner));
+                var teamLabels = [];
+                for (var k = 0; k < result.teamMembers.length; k++) {
+                    teamLabels.push(engine.getPlayerLabel(result.teamMembers[k]));
+                }
                 title = winnerLabel + ' Domino! (Team)';
                 body = '<div class="result-line">' + winnerLabel + ' played all tiles.</div>';
-                body += '<div class="result-line">Team: ' + winnerLabel + ' + ' + partnerLabel + '</div>';
+                body += '<div class="result-line">Team: ' + teamLabels.join(' + ') + '</div>';
                 body += '<div class="result-line">Points awarded to team: <span class="result-highlight">+' + result.points + '</span></div>';
             } else {
                 title = winnerLabel + ' Domino!';
@@ -607,8 +621,22 @@
                 var teamLabel = (result.teamMembers.indexOf('human') !== -1) ? 'Your Team' : 'AI Team';
                 title = 'Blocked! ' + teamLabel + ' Wins';
                 body = '<div class="result-line">Board is locked \u2014 lowest team pip count wins.</div>';
-                body += '<div class="result-line result-detail">Team A (You + AI-3): ' + result.teamAPips + ' pips</div>';
-                body += '<div class="result-line result-detail">Team B (AI-1 + AI-2): ' + result.teamBPips + ' pips</div>';
+                // Dynamic team labels from teamPlayersMap
+                var tpMap = result.teamPlayersMap;
+                if (tpMap) {
+                    var teamNames = Object.keys(tpMap);
+                    for (var t = 0; t < teamNames.length; t++) {
+                        var tn = teamNames[t];
+                        var members = tpMap[tn];
+                        var labels = [];
+                        for (var m = 0; m < members.length; m++) {
+                            labels.push(engine.getPlayerLabel(members[m]));
+                        }
+                        var teamPipValue = (tn === 'A') ? result.teamAPips : result.teamBPips;
+                        body += '<div class="result-line result-detail">Team ' + tn +
+                            ' (' + labels.join(' + ') + '): ' + teamPipValue + ' pips</div>';
+                    }
+                }
             } else {
                 title = 'Blocked! ' + winnerLabel + ' Wins';
                 body = '<div class="result-line">Board is locked \u2014 lowest pip count wins.</div>';
@@ -683,13 +711,22 @@
 
     function showMatchResult(winner) {
         var winnerLabel = engine.getPlayerLabel(winner);
-        els.matchTitle.textContent = winnerLabel + (winner === 'human' ? ' Win!' : ' Wins!');
+        if (engine.teamMode) {
+            var teamMembers = D.getTeamMembers(winner);
+            var teamLabels = [];
+            for (var i = 0; i < teamMembers.length; i++) {
+                teamLabels.push(engine.getPlayerLabel(teamMembers[i]));
+            }
+            els.matchTitle.textContent = teamLabels.join(' + ') + ' Win!';
+        } else {
+            els.matchTitle.textContent = winnerLabel + (winner === 'human' ? ' Win!' : ' Wins!');
+        }
         els.matchBody.innerHTML =
             '<div style="font-size:1.1rem;text-align:center;margin-bottom:8px;">Final Score</div>' +
             '<div style="text-align:center;font-size:1.2rem;font-weight:700;color:#f0d060;">You: ' +
             engine.matchScore.human + ' &mdash; AI-1: ' + engine.matchScore.ai1 +
-            ' &mdash; AI-3: ' + engine.matchScore.ai3 +
-            ' &mdash; AI-2: ' + engine.matchScore.ai2 + '</div>' +
+            ' &mdash; AI-2: ' + engine.matchScore.ai2 +
+            ' &mdash; AI-3: ' + engine.matchScore.ai3 + '</div>' +
             '<div style="text-align:center;margin-top:8px;opacity:0.7;">Hands played: ' + engine.handNumber + '</div>';
         els.matchOverlay.style.display = 'flex';
     }

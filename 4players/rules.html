@@ -287,7 +287,7 @@
         <li><a href="#scoring">3. Scoring</a></li>
         <li><a href="#match">4. Match Mode</a></li>
         <li><a href="#independent">5. Independent Mode</a></li>
-        <li><a href="#coordinated">6. Coordinated (2v2 Team) Mode</a></li>
+        <li><a href="#coordinated">6. Coordinated (Team) Modes</a></li>
         <li><a href="#ai-strategies">7. AI Strategies (Hard Difficulty)</a></li>
         <li><a href="#controls">8. Controls &amp; UI</a></li>
       </ul>
@@ -397,14 +397,15 @@
         </tr>
         <tr>
           <td><strong>Domino</strong></td>
-          <td>Both winning team members get the losing team's combined pips</td>
+          <td>All winning team members get the losing team's combined pips</td>
         </tr>
         <tr>
           <td><strong>Block Win</strong></td>
-          <td>Both winning team members get (losing team's pips) &minus; (winning team's pips)</td>
+          <td>All winning team members get (losing team's pips) &minus; (winning team's pips)</td>
         </tr>
       </table>
-      <div class="example">AI-1 dominoes. Losing team (You + AI-3) has 10 + 14 = 24 pips. Both AI-1 and AI-2 score <strong>24 points</strong> each.</div>
+      <div class="example"><strong>1v3:</strong> AI-2 dominoes. You have 22 pips remaining. All three AIs (AI-1, AI-2, AI-3) score <strong>22 points</strong> each.</div>
+      <div class="example"><strong>2v2:</strong> AI-1 dominoes. Losing team (You + AI-3) has 10 + 14 = 24 pips. Both AI-1 and AI-2 score <strong>24 points</strong> each.</div>
     </div>
 
     <!-- ============================================================ -->
@@ -446,15 +447,24 @@
     </div>
 
     <!-- ============================================================ -->
-    <h2 id="coordinated">6. Coordinated (2v2 Team) Mode</h2>
+    <h2 id="coordinated">6. Coordinated (Team) Modes</h2>
     <!-- ============================================================ -->
 
+    <p>Two team configurations are available:</p>
+
     <div class="card card--team">
-      <p><strong>Teams:</strong> <span class="color-human">You</span> + <span class="color-ai3">AI-3</span> (Team A) vs <span class="color-ai1">AI-1</span> + <span class="color-ai2">AI-2</span> (Team B).</p>
-      <p>Partners sit across from each other in the seating order. Your partner AI-3 cooperates with you using only public board information &mdash; no cheating, no tile sharing.</p>
+      <h3 style="margin-top:0;color:#e05050;">Teams (1v3) &mdash; Default</h3>
+      <p><span class="color-human">You</span> alone vs <span class="color-ai1">AI-1</span> + <span class="color-ai2">AI-2</span> + <span class="color-ai3">AI-3</span>. All three AIs cooperate against you as a single team.</p>
+      <p><strong>Scoring:</strong> When an AI dominoes, all 3 AIs receive your remaining pips. When you domino, you receive all 3 AIs' combined pips. In a block, the side with the lowest total pips wins.</p>
     </div>
 
-    <p>Team cooperation emerges from three strategies layered on top of normal play:</p>
+    <div class="card card--team">
+      <h3 style="margin-top:0;color:#d4a843;">Teams (2v2)</h3>
+      <p><span class="color-human">You</span> + <span class="color-ai3">AI-3</span> (Team A) vs <span class="color-ai1">AI-1</span> + <span class="color-ai2">AI-2</span> (Team B). Partners sit across from each other in the seating order.</p>
+      <p><strong>Scoring:</strong> Both winning team members receive the losing team's combined pips. In a block, the team with the lowest combined pips wins.</p>
+    </div>
+
+    <p>In both team modes, AI cooperation emerges from three strategies layered on top of normal play:</p>
 
     <div class="strategy coop-strategy">
       <strong>C1: Non-Aggression Pact</strong>

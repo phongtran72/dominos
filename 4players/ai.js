@@ -173,15 +173,17 @@
     // AIPlayer — Enhanced with tracking, inference, lookahead
     // ============================================================
     class AIPlayer {
-        constructor(difficulty, playerId, teamMode) {
+        constructor(difficulty, playerId, teamMode, teamConfig) {
             this.difficulty = difficulty || 'easy';
             this.playerId = playerId; // 'ai1', 'ai2', or 'ai3'
             this.teamMode = !!teamMode;
+            this.teamConfig = teamConfig || null;
 
             // Set up team relationships
             var teamInfo = D.TEAMS[playerId];
-            this.partner = teamInfo.partner;
+            this.partner = teamInfo.partner;       // null in 1v3
             this.enemies = teamInfo.enemies;
+            this.teammates = teamInfo.teammates || [];
 
             this.tracker = new TileTracker4P(playerId);
         }
@@ -456,8 +458,11 @@
                 var avgPipPerTile = 5.5;
                 var iWinBlock;
                 if (this.teamMode) {
-                    var partnerPips = tracker.opponentHandSizes[this.partner] * avgPipPerTile;
-                    var myTeamPips = myPips + partnerPips;
+                    var teammatePips = 0;
+                    for (var ti = 0; ti < this.teammates.length; ti++) {
+                        teammatePips += tracker.opponentHandSizes[this.teammates[ti]] * avgPipPerTile;
+                    }
+                    var myTeamPips = myPips + teammatePips;
                     var enemyPips = 0;
                     for (var ei = 0; ei < this.enemies.length; ei++) {
                         enemyPips += tracker.opponentHandSizes[this.enemies[ei]] * avgPipPerTile;
@@ -504,22 +509,25 @@
                 }
             }
 
-            // === C3: Sacrifice for Partner (help partner domino) ===
-            if (this.teamMode && newEnd !== null) {
-                var partnerCount = tracker.opponentHandSizes[this.partner];
-                if (partnerCount <= 3) {
-                    var urgency = (partnerCount === 1) ? 15 : (partnerCount === 2) ? 10 : 6;
-                    var otherEnd = this.getOtherBoardEnd(end, board, tile);
+            // === C3: Sacrifice for Teammates (help teammate domino) ===
+            if (this.teamMode && newEnd !== null && this.teammates.length > 0) {
+                for (var ti = 0; ti < this.teammates.length; ti++) {
+                    var teammate = this.teammates[ti];
+                    var teammateCount = tracker.opponentHandSizes[teammate];
+                    if (teammateCount <= 3) {
+                        var urgency = (teammateCount === 1) ? 15 : (teammateCount === 2) ? 10 : 6;
+                        var otherEnd = this.getOtherBoardEnd(end, board, tile);
 
-                    if (!tracker.playerLacks(this.partner, newEnd)) {
-                        score += urgency;
-                    }
-                    if (tracker.playerLacks(this.partner, newEnd)) {
-                        score -= urgency;
-                    }
-                    if (otherEnd !== null) {
-                        if (!tracker.playerLacks(this.partner, otherEnd)) {
-                            score += Math.floor(urgency / 2);
+                        if (!tracker.playerLacks(teammate, newEnd)) {
+                            score += urgency;
+                        }
+                        if (tracker.playerLacks(teammate, newEnd)) {
+                            score -= urgency;
+                        }
+                        if (otherEnd !== null) {
+                            if (!tracker.playerLacks(teammate, otherEnd)) {
+                                score += Math.floor(urgency / 2);
+                            }
                         }
                     }
                 }

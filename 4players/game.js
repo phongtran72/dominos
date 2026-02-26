@@ -254,18 +254,38 @@ window.Domino = window.Domino || {};
 
   // --- Team helpers ---
   var TEAMS = {
-    human: { partner: 'ai3', team: 'A', enemies: ['ai1', 'ai2'] },
-    ai3:   { partner: 'human', team: 'A', enemies: ['ai1', 'ai2'] },
-    ai1:   { partner: 'ai2', team: 'B', enemies: ['human', 'ai3'] },
-    ai2:   { partner: 'ai1', team: 'B', enemies: ['human', 'ai3'] }
+    human: { partner: 'ai3', team: 'A', enemies: ['ai1', 'ai2'], teammates: ['ai3'] },
+    ai3:   { partner: 'human', team: 'A', enemies: ['ai1', 'ai2'], teammates: ['human'] },
+    ai1:   { partner: 'ai2', team: 'B', enemies: ['human', 'ai3'], teammates: ['ai2'] },
+    ai2:   { partner: 'ai1', team: 'B', enemies: ['human', 'ai3'], teammates: ['ai1'] }
   };
+
+  // config: '2v2' or '1v3'
+  function configureTeams(config) {
+    if (config === '1v3') {
+      TEAMS.human = { partner: null, team: 'A', enemies: ['ai1', 'ai2', 'ai3'], teammates: [] };
+      TEAMS.ai1   = { partner: null, team: 'B', enemies: ['human'], teammates: ['ai2', 'ai3'] };
+      TEAMS.ai2   = { partner: null, team: 'B', enemies: ['human'], teammates: ['ai1', 'ai3'] };
+      TEAMS.ai3   = { partner: null, team: 'B', enemies: ['human'], teammates: ['ai1', 'ai2'] };
+    } else {
+      // Default 2v2
+      TEAMS.human = { partner: 'ai3', team: 'A', enemies: ['ai1', 'ai2'], teammates: ['ai3'] };
+      TEAMS.ai3   = { partner: 'human', team: 'A', enemies: ['ai1', 'ai2'], teammates: ['human'] };
+      TEAMS.ai1   = { partner: 'ai2', team: 'B', enemies: ['human', 'ai3'], teammates: ['ai2'] };
+      TEAMS.ai2   = { partner: 'ai1', team: 'B', enemies: ['human', 'ai3'], teammates: ['ai1'] };
+    }
+  }
 
   function getPartner(player) {
     return TEAMS[player].partner;
   }
 
   function getTeamMembers(player) {
-    return [player, TEAMS[player].partner];
+    return [player].concat(TEAMS[player].teammates);
+  }
+
+  function getTeammates(player) {
+    return TEAMS[player].teammates;
   }
 
   function getEnemies(player) {
@@ -287,13 +307,18 @@ window.Domino = window.Domino || {};
       this.hand = null; // current HandState
       this.gameMode = 'quick';
       this.teamMode = false;
+      this.teamConfig = null; // null, '2v2', or '1v3'
     }
 
-    newMatch(difficulty, gameMode, teamMode) {
+    newMatch(difficulty, gameMode, teamMode, teamConfig) {
       this.matchScore = { human: 0, ai1: 0, ai2: 0, ai3: 0 };
       this.aiDifficulty = difficulty || 'easy';
       this.gameMode = gameMode || 'quick';
       this.teamMode = !!teamMode;
+      this.teamConfig = teamConfig || null;
+      if (this.teamMode && this.teamConfig) {
+        configureTeams(this.teamConfig);
+      }
       this.previousHandWinner = null;
       this.handNumber = 0;
     }
@@ -537,42 +562,50 @@ window.Domino = window.Domino || {};
       var board = this.hand.board;
 
       if (this.teamMode) {
-        // Team mode: team with lowest combined pips wins
-        var teamAPips = this.getHand('human').totalPipsWithGhost(board) +
-                        this.getHand('ai3').totalPipsWithGhost(board);
-        var teamBPips = this.getHand('ai1').totalPipsWithGhost(board) +
-                        this.getHand('ai2').totalPipsWithGhost(board);
+        // Dynamic team discovery from TEAMS config
+        var teamPlayersMap = {}; // e.g. { A: ['human'], B: ['ai1','ai2','ai3'] } for 1v3
+        for (var i = 0; i < PLAYERS.length; i++) {
+          var tn = getTeamName(PLAYERS[i]);
+          if (!teamPlayersMap[tn]) teamPlayersMap[tn] = [];
+          teamPlayersMap[tn].push(PLAYERS[i]);
+        }
 
+        var teamNames = Object.keys(teamPlayersMap);
         var pipCounts = {};
+        var teamPips = {};
+
         for (var i = 0; i < PLAYERS.length; i++) {
           pipCounts[PLAYERS[i]] = this.getHand(PLAYERS[i]).totalPipsWithGhost(board);
         }
 
-        var winningTeam, losingTeamPips, winningTeamPips;
-        var winner;
-
-        if (teamAPips < teamBPips) {
-          winningTeam = 'A';
-          winningTeamPips = teamAPips;
-          losingTeamPips = teamBPips;
-          // Winner is the team member with fewer pips
-          winner = (pipCounts.human <= pipCounts.ai3) ? 'human' : 'ai3';
-        } else if (teamBPips < teamAPips) {
-          winningTeam = 'B';
-          winningTeamPips = teamBPips;
-          losingTeamPips = teamAPips;
-          winner = (pipCounts.ai1 <= pipCounts.ai2) ? 'ai1' : 'ai2';
-        } else {
-          // Tie: first team in order wins (Team A)
-          winningTeam = 'A';
-          winningTeamPips = teamAPips;
-          losingTeamPips = teamBPips;
-          winner = (pipCounts.human <= pipCounts.ai3) ? 'human' : 'ai3';
+        for (var t = 0; t < teamNames.length; t++) {
+          var tn = teamNames[t];
+          teamPips[tn] = 0;
+          for (var p = 0; p < teamPlayersMap[tn].length; p++) {
+            teamPips[tn] += pipCounts[teamPlayersMap[tn][p]];
+          }
         }
 
-        var points = losingTeamPips - winningTeamPips;
-        var teamMembers = (winningTeam === 'A') ? ['human', 'ai3'] : ['ai1', 'ai2'];
+        // Find winning team (lowest combined pips, tie goes to first team)
+        var winningTeamName = teamNames[0];
+        for (var t = 1; t < teamNames.length; t++) {
+          if (teamPips[teamNames[t]] < teamPips[winningTeamName]) {
+            winningTeamName = teamNames[t];
+          }
+        }
 
+        var losingTeamName = (winningTeamName === teamNames[0]) ? teamNames[1] : teamNames[0];
+
+        // Winner = team member with fewest pips
+        var teamMembers = teamPlayersMap[winningTeamName];
+        var winner = teamMembers[0];
+        for (var p = 1; p < teamMembers.length; p++) {
+          if (pipCounts[teamMembers[p]] < pipCounts[winner]) {
+            winner = teamMembers[p];
+          }
+        }
+
+        var points = teamPips[losingTeamName] - teamPips[winningTeamName];
         for (var i = 0; i < teamMembers.length; i++) {
           this.matchScore[teamMembers[i]] += points;
         }
@@ -586,8 +619,9 @@ window.Domino = window.Domino || {};
           pipCounts: pipCounts,
           teamWin: true,
           teamMembers: teamMembers,
-          teamAPips: teamAPips,
-          teamBPips: teamBPips
+          teamAPips: teamPips['A'],
+          teamBPips: teamPips['B'],
+          teamPlayersMap: teamPlayersMap
         };
       } else {
         // Independent mode: player with lowest pip count wins
@@ -707,10 +741,12 @@ window.Domino = window.Domino || {};
   D.shuffle = shuffle;
   D.PLAYERS = PLAYERS;
   D.TEAMS = TEAMS;
+  D.configureTeams = configureTeams;
   D.getNextPlayer = getNextPlayer;
   D.getOtherPlayers = getOtherPlayers;
   D.getPartner = getPartner;
   D.getTeamMembers = getTeamMembers;
+  D.getTeammates = getTeammates;
   D.getEnemies = getEnemies;
   D.getTeamName = getTeamName;
 
