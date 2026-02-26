@@ -897,9 +897,9 @@
         return el;
     }
 
-    function createBackTile() {
+    function createBackTile(player) {
         var el = document.createElement('div');
-        el.className = 'tile tile--back';
+        el.className = 'tile tile--back' + (player ? ' tile--back-' + player : '');
         return el;
     }
 
@@ -1012,7 +1012,7 @@
         handEl.innerHTML = '';
         var count = hand.count();
         for (var i = 0; i < count; i++) {
-            handEl.appendChild(createBackTile());
+            handEl.appendChild(createBackTile(player));
         }
         countEl.textContent = '(' + count + ')';
     }
@@ -1283,7 +1283,7 @@
 
         handEl.innerHTML = '';
         for (var i = 0; i < tiles.length; i++) {
-            handEl.appendChild(createBackTile());
+            handEl.appendChild(createBackTile(player));
         }
         countEl.textContent = '(' + tiles.length + ')';
     }

@@ -413,6 +413,22 @@ body {
   border-radius: 3px;
 }
 
+/* Player color-coded back tiles */
+.tile--back-ai1 {
+  background: linear-gradient(135deg, #7f4a2a 0%, #603a1a 100%);
+  border-color: #ff8a65;
+}
+.tile--back-ai1::after {
+  border-color: rgba(255, 138, 101, 0.25);
+}
+.tile--back-ai2 {
+  background: linear-gradient(135deg, #5a2a7f 0%, #401a60 100%);
+  border-color: #ab80f0;
+}
+.tile--back-ai2::after {
+  border-color: rgba(171, 128, 240, 0.25);
+}
+
 /* Tile states */
 .tile--playable {
   border-color: #4ca0ff;
