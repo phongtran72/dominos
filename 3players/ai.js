@@ -1,12 +1,14 @@
 // ============================================================
 // ai.js — ENHANCED AI for 3-Player Dominos
 //
-// 7 strategic advantages over human:
+// Strategic advantages over human:
 //   1. Perfect tile tracking (knows exactly which tiles are unseen)
 //   2. Bayesian inference (deduces opponent hands from pass events)
 //   3. Endpoint locking (forces opponents to pass on values they lack)
-//   4. Determinization (Monte Carlo sampling of possible hands)
+//   4. Monte Carlo 3-ply lookahead (samples hands, simulates 3 turns)
 //   5. Pass event analysis (extracts max info from each pass)
+//   6. Chain detection (plan consecutive plays, keep hand connected)
+//   7. Endgame urgency (prioritize going out when hand is small)
 //   8. Kingmaker awareness (block the leader who's about to domino)
 //   S4. Block steering (steer toward/away from blocks based on pip advantage)
 //
@@ -148,7 +150,7 @@
     }
 
     // ============================================================
-    // AIPlayer — Enhanced with tracking, inference, determinization
+    // AIPlayer — Enhanced with tracking, inference, lookahead
     // ============================================================
     class AIPlayer {
         constructor(difficulty, playerId, teamMode) {
@@ -229,10 +231,8 @@
                 scored.push({ move: m, score: score });
             }
 
-            // Advantage #4: Determinization — Monte Carlo sampling
-            if (this.tracker.getTotalLackedValueCount() >= 1) {
-                scored = this.applyDeterminization(scored, engine);
-            }
+            // Advantage #4: Monte Carlo 3-ply lookahead — ALWAYS run
+            scored = this.applyLookahead(scored, engine);
 
             // Sort by score descending
             scored.sort(function (a, b) { return b.score - a.score; });
@@ -251,7 +251,7 @@
             return {
                 move: scored[0].move,
                 bestScore: scored[0].score,
-                depth: 1,
+                depth: 3,
                 nodes: legalMoves.length,
                 analysis: analysis
             };
@@ -264,11 +264,12 @@
             var tracker = this.tracker;
 
             // === 1. Play heavy tiles first (reduce pip risk) ===
-            score += tile.pipCount() * 2;
+            // Reduced weight — important but shouldn't dominate strategy
+            score += tile.pipCount() * 1;
 
             // === 2. Play doubles early ===
             if (tile.isDouble()) {
-                score += 8;
+                score += 5;
             }
 
             // === 3. Basic: exploit opponents' passed values ===
@@ -364,8 +365,6 @@
             score += suitCount * 1;
 
             // === Advantage #1+2: Board scarcity exploitation ===
-            // If many tiles of a suit are in AI hand or on board,
-            // leaving that value on the board is hard for opponents
             if (newEnd !== null) {
                 var knownTilesWithValue = 0;
                 for (var v = 0; v <= 6; v++) {
@@ -379,7 +378,7 @@
             }
 
             // === Advantage #2: Penalize ends where opponents likely have tiles ===
-            // C1: In team mode, only count tiles that could be human's (not partner's)
+            // C1: In team mode, only count tiles that could be human's
             if (newEnd !== null) {
                 if (this.teamMode) {
                     var humanPossible = tracker.getPossibleTilesForPlayer(this.enemy);
@@ -405,8 +404,7 @@
             }
 
             // === Advantage #8: Kingmaker Awareness (Block the Leader) ===
-            // If an opponent has very few tiles left, strongly penalize leaving playable ends for them.
-            // C1: In team mode, only penalize for HUMAN approaching domino (partner domino is a win).
+            // C1: In team mode, only penalize for HUMAN approaching domino
             if (newEnd !== null) {
                 var kingmakerPenalty = 0;
                 var kingTargets = this.teamMode ? [this.enemy] : opponents;
@@ -426,24 +424,19 @@
                 score -= kingmakerPenalty;
             }
 
-            // === Strategy #4: Block Steering (per-AI individual) ===
-            // If a block favors this AI (lowest pips), steer toward it.
-            // If a block doesn't favor this AI, avoid it.
+            // === Strategy S4: Block Steering (per-AI individual) ===
             // C1: In team mode, check if EITHER AI wins the block (team wins).
             if (newEnd !== null && board.tiles.length >= 6) {
-                // Estimate pip counts
                 var myPips = 0;
                 for (var i = 0; i < remainingTiles.length; i++) {
                     myPips += remainingTiles[i].pipCount();
                 }
 
-                // Estimate opponents' pips from hand sizes and game average
                 var avgPipPerTile = 5.5;
                 var humanPips = tracker.opponentHandSizes[this.enemy] * avgPipPerTile;
                 var partnerPips = tracker.opponentHandSizes[this.partner] * avgPipPerTile;
                 var iWinBlock;
                 if (this.teamMode) {
-                    // Team wins if either AI has fewer pips than human
                     iWinBlock = (myPips < humanPips) || (partnerPips < humanPips);
                 } else {
                     var opp1Pips = tracker.opponentHandSizes[opponents[0]] * avgPipPerTile;
@@ -451,8 +444,6 @@
                     iWinBlock = (myPips < opp1Pips && myPips < opp2Pips);
                 }
 
-                // Count how many unseen tiles can match the new end value
-                // Fewer matching unseen tiles = board end is harder to play on = closer to block
                 var unseenMatchingNewEnd = 0;
                 var unseenAll = tracker.getUnseenTiles();
                 for (var ui = 0; ui < unseenAll.length; ui++) {
@@ -462,7 +453,6 @@
                     if (lo === newEnd || hi === newEnd) unseenMatchingNewEnd++;
                 }
 
-                // Also check the other end
                 var otherEnd = this.getOtherBoardEnd(end, board, tile);
                 var unseenMatchingOtherEnd = 0;
                 if (otherEnd !== null) {
@@ -474,40 +464,31 @@
                     }
                 }
 
-                // "Board tightness" = how few unseen tiles match either end
-                // Lower = tighter = closer to block
                 var tightness = Math.max(0, 6 - (unseenMatchingNewEnd + unseenMatchingOtherEnd));
 
                 if (iWinBlock) {
-                    // Block favors us: bonus for tight board positions
                     score += tightness * 3;
-                    // Penalize playing doubles (doubles open the board with matching values)
                     if (tile.isDouble()) {
                         score -= 6;
                     }
                 } else {
-                    // Block doesn't favor us: penalize tight positions, prefer open board
                     score -= tightness * 2;
                 }
             }
 
             // === C3: Sacrifice for Partner (help partner domino) ===
-            // When partner has few tiles, keep endpoints they can likely play on.
             if (this.teamMode && newEnd !== null) {
                 var partnerCount = tracker.opponentHandSizes[this.partner];
                 if (partnerCount <= 3) {
                     var urgency = (partnerCount === 1) ? 15 : (partnerCount === 2) ? 10 : 6;
                     var otherEnd = this.getOtherBoardEnd(end, board, tile);
 
-                    // Bonus for endpoints partner can play on
                     if (!tracker.playerLacks(this.partner, newEnd)) {
                         score += urgency;
                     }
-                    // Penalty for endpoints partner definitely can't play on
                     if (tracker.playerLacks(this.partner, newEnd)) {
                         score -= urgency;
                     }
-                    // Also consider the other end for partner
                     if (otherEnd !== null) {
                         if (!tracker.playerLacks(this.partner, otherEnd)) {
                             score += Math.floor(urgency / 2);
@@ -526,20 +507,97 @@
                 score += Object.keys(valueCoverage).length * 1;
             }
 
+            // === Advantage #6: Chain detection ===
+            // After playing this tile, can AI chain consecutive plays?
+            // Depth-2 chain: play tile → set up next play → set up play after that
+            if (newEnd !== null && remainingTiles.length > 0) {
+                var chainScore = 0;
+                var otherEnd = this.getOtherBoardEnd(end, board, tile);
+
+                // Level 1: tiles that can play on newEnd
+                for (var i = 0; i < remainingTiles.length; i++) {
+                    if (remainingTiles[i].matches(newEnd)) {
+                        var afterEnd = remainingTiles[i].otherSide(newEnd);
+                        chainScore += 3; // each continuation = good
+
+                        // Level 2: tiles that can play after level-1 tile
+                        for (var j = 0; j < remainingTiles.length; j++) {
+                            if (j === i) continue;
+                            if (remainingTiles[j].matches(afterEnd)) {
+                                chainScore += 2;
+                            }
+                            if (otherEnd !== null && remainingTiles[j].matches(otherEnd)) {
+                                chainScore += 1;
+                            }
+                        }
+                    }
+                }
+                score += chainScore;
+            }
+
+            // === Advantage #7: Endgame urgency ===
+            // When AI hand is small, prioritize moves that lead to going out
+            if (remainingTiles.length <= 3 && newEnd !== null) {
+                var otherEnd = this.getOtherBoardEnd(end, board, tile);
+
+                if (remainingTiles.length === 1) {
+                    var lastTile = remainingTiles[0];
+                    if (lastTile.matches(newEnd) || (otherEnd !== null && lastTile.matches(otherEnd))) {
+                        score += 50; // massive bonus: guaranteed domino next turn!
+                    } else {
+                        score -= 15; // bad: stuck with unplayable tile
+                    }
+                }
+                else if (remainingTiles.length === 2) {
+                    var canChainOut = false;
+                    for (var i = 0; i < 2; i++) {
+                        var first = remainingTiles[i];
+                        var second = remainingTiles[1 - i];
+                        if (first.matches(newEnd)) {
+                            var nextEnd = first.otherSide(newEnd);
+                            if (second.matches(nextEnd) || (otherEnd !== null && second.matches(otherEnd))) {
+                                canChainOut = true;
+                            }
+                        }
+                        if (otherEnd !== null && first.matches(otherEnd)) {
+                            var nextOther = first.otherSide(otherEnd);
+                            if (second.matches(newEnd) || second.matches(nextOther)) {
+                                canChainOut = true;
+                            }
+                        }
+                    }
+                    if (canChainOut) {
+                        score += 30; // strong bonus: can go out in 2 turns
+                    }
+                }
+                else if (remainingTiles.length === 3) {
+                    var playableCount = 0;
+                    for (var i = 0; i < remainingTiles.length; i++) {
+                        if (remainingTiles[i].matches(newEnd) ||
+                            (otherEnd !== null && remainingTiles[i].matches(otherEnd))) {
+                            playableCount++;
+                        }
+                    }
+                    score += playableCount * 8;
+                }
+            }
+
             return score;
         }
 
         // ============================================================
-        // Advantage #4: Determinization — Monte Carlo sampling
-        // Sample N random consistent opponent hands, simulate each,
-        // and adjust move scores based on average outcomes
+        // Advantage #4: Monte Carlo 3-ply Lookahead
+        // ALWAYS runs — no inference gate. Samples random opponent
+        // hands from unseen tiles, simulates AI→Opponent→AI turns.
         // ============================================================
-        applyDeterminization(scored, engine) {
+        applyLookahead(scored, engine) {
             var tracker = this.tracker;
             var SAMPLES = 25;
             var opponents = D.getOtherPlayers(this.playerId);
             var opp1 = opponents[0];
             var opp2 = opponents[1];
+            var myHand = engine.getHand(this.playerId);
+            var board = engine.hand.board;
 
             var opp1Size = tracker.opponentHandSizes[opp1];
             var opp2Size = tracker.opponentHandSizes[opp2];
@@ -595,8 +653,8 @@
                     // Only count samples where we could fill both hands reasonably
                     if (sampledOpp1.length >= Math.max(1, opp1Size - 2) &&
                         sampledOpp2.length >= Math.max(1, opp2Size - 2)) {
-                        var outcome = this.evaluateMoveInWorld(
-                            scored[mi].move, sampledOpp1, sampledOpp2, engine.hand.board
+                        var outcome = this.simulate3Ply(
+                            scored[mi].move, sampledOpp1, sampledOpp2, myHand, board
                         );
                         totalOutcome += outcome;
                         validSamples++;
@@ -604,83 +662,174 @@
                 }
 
                 if (validSamples > 0) {
-                    scored[mi].score += (totalOutcome / validSamples) * 3;
+                    // Weight lookahead heavily — this IS the AI's planning ability
+                    scored[mi].score += (totalOutcome / validSamples) * 5;
                 }
             }
 
             return scored;
         }
 
-        // Evaluate a move in a simulated world with two opponent hands
-        // In determinization, opp1 = opponents[0], opp2 = opponents[1]
-        // In team mode: opponents = [human, partner] (from getOtherPlayers)
-        evaluateMoveInWorld(move, sampledOpp1Hand, sampledOpp2Hand, board) {
-            var newEnd = this.getNewBoardEnd(move.tile, move.end, board);
-            var otherEnd = this.getOtherBoardEnd(move.end, board, move.tile);
+        // ============================================================
+        // 3-ply simulation: AI plays → Next opponent responds → AI responds
+        // Returns a score for the resulting position.
+        // ============================================================
+        simulate3Ply(aiMove, sampledOpp1Hand, sampledOpp2Hand, myHand, board) {
+            var tile = aiMove.tile;
+            var end = aiMove.end;
+            var tracker = this.tracker;
 
+            // --- Ply 1: AI plays ---
+            var newEnd = this.getNewBoardEnd(tile, end, board);
+            var otherEnd = this.getOtherBoardEnd(end, board, tile);
             if (newEnd === null) return 0;
 
-            // Check if each opponent can respond to the new board state
-            var opp1CanPlay = false;
-            var opp2CanPlay = false;
-
-            for (var i = 0; i < sampledOpp1Hand.length; i++) {
-                var parts = sampledOpp1Hand[i].split('-');
-                var lo = parseInt(parts[0]);
-                var hi = parseInt(parts[1]);
-                if (lo === newEnd || hi === newEnd || lo === otherEnd || hi === otherEnd) {
-                    opp1CanPlay = true;
-                    break;
-                }
+            // Board ends after AI plays
+            var leftEnd1, rightEnd1;
+            if (end === 'left') {
+                leftEnd1 = newEnd;
+                rightEnd1 = (board.isEmpty()) ? tile.high : board.rightEnd;
+            } else {
+                leftEnd1 = (board.isEmpty()) ? tile.low : board.leftEnd;
+                rightEnd1 = newEnd;
             }
 
-            for (var i = 0; i < sampledOpp2Hand.length; i++) {
-                var parts = sampledOpp2Hand[i].split('-');
-                var lo = parseInt(parts[0]);
-                var hi = parseInt(parts[1]);
-                if (lo === newEnd || hi === newEnd || lo === otherEnd || hi === otherEnd) {
-                    opp2CanPlay = true;
-                    break;
-                }
+            // AI remaining tiles
+            var aiRemaining = [];
+            for (var i = 0; i < myHand.tiles.length; i++) {
+                if (myHand.tiles[i] !== tile) aiRemaining.push(myHand.tiles[i]);
             }
 
+            // Determine who is next opponent (the one right after this AI in turn order)
+            var opponents = D.getOtherPlayers(this.playerId);
+            // In team mode, the enemy (human) is the key opponent
+            var nextOppHand, nextOppId;
             if (this.teamMode) {
-                // In team mode, opponents[] order: first is human, second might be partner
-                // (getOtherPlayers returns both non-self players)
-                // We want: human blocked = great, partner blocked = bad
-                var opponents = D.getOtherPlayers(this.playerId);
+                // Human is the critical opponent to model
                 var humanIdx = (opponents[0] === this.enemy) ? 0 : 1;
-                var humanCanPlay = (humanIdx === 0) ? opp1CanPlay : opp2CanPlay;
-                var partnerCanPlay = (humanIdx === 0) ? opp2CanPlay : opp1CanPlay;
-
-                if (!humanCanPlay && partnerCanPlay) return 8;  // Ideal: human stuck, partner plays
-                if (!humanCanPlay && !partnerCanPlay) return 3; // Both stuck: block, but not ideal
-                if (humanCanPlay && partnerCanPlay) return 0;   // Normal play
-                if (humanCanPlay && !partnerCanPlay) return -3;  // Bad: partner stuck, human plays
-                return 0;
+                nextOppHand = (humanIdx === 0) ? sampledOpp1Hand : sampledOpp2Hand;
+                nextOppId = this.enemy;
+            } else {
+                // Model the next player in turn order
+                nextOppHand = sampledOpp1Hand;
+                nextOppId = opponents[0];
             }
 
-            // Independent mode (original logic)
-            // Neither can respond — near-block position, very strong
-            if (!opp1CanPlay && !opp2CanPlay) return 8;
-
-            // One can't respond — decent
-            if (!opp1CanPlay || !opp2CanPlay) return 3;
-
-            // Both can respond — evaluate minimum pip cost of their responses
-            var minOppPips = Infinity;
-            var combined = sampledOpp1Hand.concat(sampledOpp2Hand);
-            for (var i = 0; i < combined.length; i++) {
-                var parts = combined[i].split('-');
+            // --- Ply 2: Next opponent responds ---
+            var oppPlayable = [];
+            for (var i = 0; i < nextOppHand.length; i++) {
+                var parts = nextOppHand[i].split('-');
                 var lo = parseInt(parts[0]);
                 var hi = parseInt(parts[1]);
-                if (lo === newEnd || hi === newEnd || lo === otherEnd || hi === otherEnd) {
-                    var pips = lo + hi;
-                    if (pips < minOppPips) minOppPips = pips;
+                var pips = lo + hi;
+                if (lo === leftEnd1 || hi === leftEnd1) {
+                    var oNewEnd = (hi === leftEnd1) ? lo : hi;
+                    oppPlayable.push({ idx: i, lo: lo, hi: hi, pips: pips, end: 'left', newLeft: oNewEnd, newRight: rightEnd1 });
+                }
+                if (lo === rightEnd1 || hi === rightEnd1) {
+                    var oNewEnd = (lo === rightEnd1) ? hi : lo;
+                    oppPlayable.push({ idx: i, lo: lo, hi: hi, pips: pips, end: 'right', newLeft: leftEnd1, newRight: oNewEnd });
                 }
             }
 
-            return (minOppPips - 5) * 0.3;
+            // Opponent can't play — must pass. Great for AI!
+            if (oppPlayable.length === 0) {
+                var aiOptions = 0;
+                for (var i = 0; i < aiRemaining.length; i++) {
+                    if (aiRemaining[i].matches(leftEnd1) || aiRemaining[i].matches(rightEnd1)) aiOptions++;
+                }
+                if (this.teamMode && nextOppId === this.enemy) {
+                    return 10 + aiOptions * 2; // Human stuck = very good
+                }
+                return 8 + aiOptions * 2;
+            }
+
+            // Opponent picks their best response:
+            // Minimize AI's options (adversarial modeling)
+            var bestOppMove = null;
+            var worstForAI = Infinity;
+
+            for (var h = 0; h < oppPlayable.length; h++) {
+                var op = oppPlayable[h];
+                var aiOpts = 0;
+                for (var i = 0; i < aiRemaining.length; i++) {
+                    if (aiRemaining[i].matches(op.newLeft) || aiRemaining[i].matches(op.newRight)) aiOpts++;
+                }
+                if (aiOpts < worstForAI || (aiOpts === worstForAI && (!bestOppMove || op.pips > bestOppMove.pips))) {
+                    worstForAI = aiOpts;
+                    bestOppMove = op;
+                }
+            }
+
+            if (!bestOppMove) return 0;
+
+            var leftEnd2 = bestOppMove.newLeft;
+            var rightEnd2 = bestOppMove.newRight;
+
+            // --- Ply 3: AI responds ---
+            var aiPlayable = [];
+            for (var i = 0; i < aiRemaining.length; i++) {
+                if (aiRemaining[i].matches(leftEnd2)) {
+                    var aNewEnd = aiRemaining[i].otherSide(leftEnd2);
+                    aiPlayable.push({ tile: aiRemaining[i], end: 'left', newLeft: aNewEnd, newRight: rightEnd2 });
+                }
+                if (aiRemaining[i].matches(rightEnd2)) {
+                    var aNewEnd = aiRemaining[i].otherSide(rightEnd2);
+                    aiPlayable.push({ tile: aiRemaining[i], end: 'right', newLeft: leftEnd2, newRight: aNewEnd });
+                }
+            }
+
+            // AI can't respond — bad
+            if (aiPlayable.length === 0) {
+                return -6;
+            }
+
+            // AI picks the move that maximizes future options
+            var bestAIScore = -Infinity;
+            for (var a = 0; a < aiPlayable.length; a++) {
+                var ap = aiPlayable[a];
+                var futureOpts = 0;
+                var aiAfter = [];
+                for (var i = 0; i < aiRemaining.length; i++) {
+                    if (aiRemaining[i] !== ap.tile) {
+                        aiAfter.push(aiRemaining[i]);
+                        if (aiRemaining[i].matches(ap.newLeft) || aiRemaining[i].matches(ap.newRight)) {
+                            futureOpts++;
+                        }
+                    }
+                }
+
+                // Count opponent threats (tiles opponent could still play)
+                var oppThreats = 0;
+                for (var i = 0; i < nextOppHand.length; i++) {
+                    if (i === bestOppMove.idx) continue;
+                    var parts = nextOppHand[i].split('-');
+                    var lo = parseInt(parts[0]);
+                    var hi = parseInt(parts[1]);
+                    if (lo === ap.newLeft || hi === ap.newLeft || lo === ap.newRight || hi === ap.newRight) {
+                        oppThreats++;
+                    }
+                }
+
+                var moveScore = futureOpts * 2 - oppThreats * 1 + ap.tile.pipCount() * 0.3;
+
+                // Endgame: about to go out?
+                if (aiAfter.length === 0) {
+                    moveScore += 20; // domino!
+                } else if (aiAfter.length === 1) {
+                    if (aiAfter[0].matches(ap.newLeft) || aiAfter[0].matches(ap.newRight)) {
+                        moveScore += 10; // one tile left and it's playable
+                    }
+                }
+
+                if (moveScore > bestAIScore) bestAIScore = moveScore;
+            }
+
+            // Final position score:
+            // AI tile count advantage + best AI move quality
+            var oppRemaining = nextOppHand.length - 1;
+            var tileAdvantage = (oppRemaining - (aiRemaining.length - 1)) * 2;
+            return bestAIScore + tileAdvantage;
         }
 
         getNewBoardEnd(tile, end, board) {
