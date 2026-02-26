@@ -1,0 +1,16 @@
+{
+  "name": "Dominos 3P",
+  "short_name": "Dominos 3P",
+  "description": "Three-player domino game with AI opponents.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#1a2c5a",
+  "theme_color": "#1a2c5a",
+  "icons": [
+    {
+      "src": "../icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    }
+  ]
+}

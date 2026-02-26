@@ -1,0 +1,1142 @@
+// ============================================================
+// ui-board.js — 3-Player Snake Board UI
+// Adapted from 2-player draw variant for 3 players.
+// Players: human, ai1, ai2. No boneyard, no draw.
+// ============================================================
+
+(function (D) {
+    'use strict';
+
+    // Pip position patterns for 3x3 grid
+    var PIP_PATTERNS = {
+        0: [],
+        1: [4],
+        2: [2, 6],
+        3: [2, 4, 6],
+        4: [0, 2, 6, 8],
+        5: [0, 2, 4, 6, 8],
+        6: [0, 2, 3, 5, 6, 8]
+    };
+
+    // Direction constants
+    var DIR_RIGHT = 0;
+    var DIR_DOWN = 1;
+    var DIR_LEFT = 2;
+    var DIR_UP = 3;
+
+    // --- DOM References ---
+    var els = {};
+    var engine = null;
+    var ai1 = null;
+    var ai2 = null;
+    var selectedTile = null;
+    var selectedMoves = [];
+    var difficulty = 'hard';
+    var gameMode = 'quick';
+    var aiMode = 'independent';
+    var isProcessing = false;
+
+    // --- History Navigation ---
+    var initialHumanTiles = null;
+    var initialAI1Tiles = null;
+    var initialAI2Tiles = null;
+    var viewIndex = -1;
+    var isReviewing = false;
+    var handOver = false;
+    var handResult = null;
+    var lastAIAnalysis = null;
+
+    // --- Snake Layout State ---
+    var currentLayout = [];
+    var currentBounds = null;
+
+    // ============================================================
+    // Init
+    // ============================================================
+    function init() {
+        els.humanScore = document.getElementById('human-score');
+        els.ai1Score = document.getElementById('ai1-score');
+        els.ai2Score = document.getElementById('ai2-score');
+        els.ai1Hand = document.getElementById('ai1-hand');
+        els.ai1TileCount = document.getElementById('ai1-tile-count');
+        els.ai2Hand = document.getElementById('ai2-hand');
+        els.ai2TileCount = document.getElementById('ai2-tile-count');
+        els.humanHand = document.getElementById('human-hand');
+        els.humanTileCount = document.getElementById('human-tile-count');
+        els.statusMessage = document.getElementById('status-message');
+        els.passBtn = document.getElementById('pass-btn');
+        els.board = document.getElementById('board');
+        els.boardLeftMarker = document.getElementById('board-left-marker');
+        els.boardRightMarker = document.getElementById('board-right-marker');
+        els.boardArea = document.getElementById('board-area');
+
+        els.navBackward = document.getElementById('nav-backward');
+        els.navForward = document.getElementById('nav-forward');
+
+        els.analysisPanel = document.getElementById('analysis-panel');
+        els.analysisList = document.getElementById('analysis-list');
+
+        els.turnIndicator = document.getElementById('turn-indicator');
+        els.turnIndicatorText = document.getElementById('turn-indicator-text');
+
+        els.startOverlay = document.getElementById('start-overlay');
+        els.leaderOverlay = document.getElementById('leader-overlay');
+        els.resultOverlay = document.getElementById('result-overlay');
+        els.resultTitle = document.getElementById('result-title');
+        els.resultBody = document.getElementById('result-body');
+
+        // Move end markers inside #board
+        els.board.appendChild(els.boardLeftMarker);
+        els.board.appendChild(els.boardRightMarker);
+
+        setupEventListeners();
+
+        // Recompute layout on resize
+        if (typeof ResizeObserver !== 'undefined') {
+            var ro = new ResizeObserver(function () {
+                if (engine && engine.hand && !isReviewing) {
+                    renderBoard();
+                }
+            });
+            ro.observe(els.boardArea);
+        }
+    }
+
+    function setupEventListeners() {
+        // Difficulty buttons
+        var diffBtns = document.querySelectorAll('[data-difficulty]');
+        for (var i = 0; i < diffBtns.length; i++) {
+            diffBtns[i].addEventListener('click', function () {
+                for (var j = 0; j < diffBtns.length; j++) diffBtns[j].classList.remove('active');
+                this.classList.add('active');
+                difficulty = this.getAttribute('data-difficulty');
+            });
+        }
+
+        // Game mode buttons (placeholder — only quick works)
+        var modeBtns = document.querySelectorAll('[data-gamemode]');
+        for (var i = 0; i < modeBtns.length; i++) {
+            modeBtns[i].addEventListener('click', function () {
+                if (this.disabled) return;
+                for (var j = 0; j < modeBtns.length; j++) modeBtns[j].classList.remove('active');
+                this.classList.add('active');
+                gameMode = this.getAttribute('data-gamemode');
+            });
+        }
+
+        // AI mode buttons
+        var aiModeBtns = document.querySelectorAll('[data-aimode]');
+        for (var i = 0; i < aiModeBtns.length; i++) {
+            aiModeBtns[i].addEventListener('click', function () {
+                for (var j = 0; j < aiModeBtns.length; j++) aiModeBtns[j].classList.remove('active');
+                this.classList.add('active');
+                aiMode = this.getAttribute('data-aimode');
+            });
+        }
+
+        // Start button
+        document.getElementById('start-btn').addEventListener('click', onStartMatch);
+
+        // Leader choice buttons
+        var leaderBtns = document.querySelectorAll('[data-leader]');
+        for (var i = 0; i < leaderBtns.length; i++) {
+            leaderBtns[i].addEventListener('click', function () {
+                onLeaderChosen(this.getAttribute('data-leader'));
+            });
+        }
+
+        // Pass button
+        els.passBtn.addEventListener('click', onPassClicked);
+
+        // Board end markers
+        els.boardLeftMarker.addEventListener('click', function () { onEndClicked('left'); });
+        els.boardRightMarker.addEventListener('click', function () { onEndClicked('right'); });
+
+        // History navigation
+        els.navBackward.addEventListener('click', goBackward);
+        els.navForward.addEventListener('click', goForward);
+
+        // Review & Play Again
+        document.getElementById('review-hand-btn').addEventListener('click', onReviewHand);
+        document.getElementById('play-again-btn').addEventListener('click', onPlayAgain);
+    }
+
+    // ---- Start Screen ----
+    function onStartMatch() {
+        engine = new D.GameEngine();
+        engine.newMatch(difficulty, gameMode);
+        var teamMode = (aiMode === 'coordinated');
+        ai1 = new D.AIPlayer(difficulty, 'ai1', teamMode);
+        ai2 = new D.AIPlayer(difficulty, 'ai2', teamMode);
+
+        els.startOverlay.style.display = 'none';
+        showLeaderChoice();
+    }
+
+    function showLeaderChoice() {
+        els.leaderOverlay.style.display = 'flex';
+    }
+
+    function onLeaderChosen(leader) {
+        els.leaderOverlay.style.display = 'none';
+        startHand(leader);
+    }
+
+    // ---- Hand Flow ----
+    function startHand(leader) {
+        engine.dealHand(leader);
+
+        initialHumanTiles = engine.hand.humanHand.tiles.slice();
+        initialAI1Tiles = engine.hand.ai1Hand.tiles.slice();
+        initialAI2Tiles = engine.hand.ai2Hand.tiles.slice();
+        viewIndex = -1;
+        isReviewing = false;
+        handOver = false;
+        handResult = null;
+        lastAIAnalysis = null;
+
+        selectedTile = null;
+        selectedMoves = [];
+        isProcessing = false;
+
+        clearAnalysis();
+        updateScoreboard();
+        renderAIHand('ai1');
+        renderAIHand('ai2');
+        renderHumanHand();
+        renderBoard();
+        hideEndMarkers();
+        updateNavButtons();
+
+        beginTurn(leader);
+    }
+
+    function beginTurn(player) {
+        updateTurnIndicator(player);
+
+        if (player === 'human') {
+            startHumanTurn();
+        } else {
+            var aiLabel = engine.getPlayerLabel(player);
+            setStatus(aiLabel + ' is thinking...');
+            disableHumanHand();
+            setTimeout(function () { executeAITurn(player); }, 600);
+        }
+    }
+
+    function updateTurnIndicator(player) {
+        if (!els.turnIndicator) return;
+        var label = engine.getPlayerLabel(player);
+        var text = (player === 'human') ? 'Your turn' : label + "'s turn";
+        els.turnIndicatorText.textContent = text;
+        els.turnIndicator.style.display = 'block';
+        els.turnIndicator.className = 'turn-indicator turn-' + player;
+    }
+
+    // ---- Human Turn ----
+    function startHumanTurn() {
+        selectedTile = null;
+        selectedMoves = [];
+        var legalMoves = engine.getLegalMoves('human');
+
+        if (legalMoves.length === 0) {
+            // No boneyard — must pass
+            setStatus('No legal moves — you must pass.');
+            els.passBtn.style.display = 'inline-block';
+            disableHumanHand();
+            hideEndMarkers();
+            return;
+        }
+
+        els.passBtn.style.display = 'none';
+        setStatus('Your turn — select a tile to play.');
+        renderHumanHand();
+        updateNavButtons();
+    }
+
+    function onTileClicked(tile) {
+        if (isProcessing || isReviewing) return;
+        var legalMoves = engine.getLegalMoves('human');
+        var tileMoves = legalMoves.filter(function (m) { return m.tile === tile; });
+
+        if (tileMoves.length === 0) return;
+
+        if (selectedTile === tile) {
+            selectedTile = null;
+            selectedMoves = [];
+            renderHumanHand();
+            hideEndMarkers();
+            setStatus('Your turn — select a tile to play.');
+            return;
+        }
+
+        selectedTile = tile;
+        selectedMoves = tileMoves;
+        renderHumanHand();
+
+        if (engine.hand.board.isEmpty()) {
+            onEndClicked('left');
+            return;
+        }
+
+        if (tileMoves.length === 1) {
+            onEndClicked(tileMoves[0].end);
+        } else {
+            showEndMarkers(tileMoves);
+            setStatus('Choose which end to play on.');
+        }
+    }
+
+    function onEndClicked(end) {
+        if (!selectedTile || isProcessing || isReviewing) return;
+
+        var move = null;
+        for (var i = 0; i < selectedMoves.length; i++) {
+            if (selectedMoves[i].end === end) {
+                move = selectedMoves[i];
+                break;
+            }
+        }
+        if (!move) return;
+
+        isProcessing = true;
+        hideEndMarkers();
+
+        var result = engine.playTile('human', move.tile, move.end);
+        selectedTile = null;
+        selectedMoves = [];
+
+        renderBoard();
+        renderHumanHand();
+        renderAIHand('ai1');
+        renderAIHand('ai2');
+        updateScoreboard();
+        clearAnalysis();
+
+        if (result.handEnd) {
+            showHandResult(result.handEnd);
+            return;
+        }
+
+        var nextPlayer = engine.hand.currentPlayer;
+        isProcessing = false;
+        beginTurn(nextPlayer);
+    }
+
+    function onPassClicked() {
+        if (isProcessing || isReviewing) return;
+        isProcessing = true;
+        els.passBtn.style.display = 'none';
+
+        var blockResult = engine.pass('human');
+
+        if (blockResult) {
+            showHandResult(blockResult);
+            return;
+        }
+
+        isProcessing = false;
+        var nextPlayer = engine.hand.currentPlayer;
+        beginTurn(nextPlayer);
+    }
+
+    // ---- AI Turn ----
+    function executeAITurn(player) {
+        var legalMoves = engine.getLegalMoves(player);
+        var aiLabel = engine.getPlayerLabel(player);
+
+        if (legalMoves.length === 0) {
+            // Must pass
+            setStatus(aiLabel + ' has no legal moves — ' + aiLabel + ' passes.');
+            var blockResult = engine.pass(player);
+
+            if (blockResult) {
+                setTimeout(function () { showHandResult(blockResult); }, 800);
+                return;
+            }
+
+            setTimeout(function () {
+                var nextPlayer = engine.hand.currentPlayer;
+                beginTurn(nextPlayer);
+            }, 800);
+            return;
+        }
+
+        // Choose move
+        var aiPlayer = (player === 'ai1') ? ai1 : ai2;
+        var aiResult = aiPlayer.chooseMove(legalMoves, engine);
+        lastAIAnalysis = {
+            bestScore: aiResult.bestScore,
+            depth: aiResult.depth,
+            nodes: aiResult.nodes,
+            analysis: aiResult.analysis
+        };
+
+        finishAIMove(player, aiResult.move);
+    }
+
+    function finishAIMove(player, move) {
+        var result = engine.playTile(player, move.tile, move.end);
+        var aiLabel = engine.getPlayerLabel(player);
+
+        setStatus(aiLabel + ' plays ' + move.tile.toString() + '.');
+        renderBoard();
+        renderAIHand('ai1');
+        renderAIHand('ai2');
+        renderHumanHand();
+        updateScoreboard();
+
+        if (lastAIAnalysis && lastAIAnalysis.analysis) {
+            renderAnalysis(lastAIAnalysis.analysis, move.tile.id, move.end);
+        }
+
+        if (result.handEnd) {
+            setTimeout(function () { showHandResult(result.handEnd); }, 600);
+            return;
+        }
+
+        setTimeout(function () {
+            var nextPlayer = engine.hand.currentPlayer;
+            beginTurn(nextPlayer);
+        }, 600);
+    }
+
+    // ---- Hand Result ----
+    function showHandResult(result) {
+        isProcessing = false;
+        isReviewing = false;
+        viewIndex = -1;
+        handOver = true;
+        handResult = result;
+        els.passBtn.style.display = 'none';
+        if (els.turnIndicator) els.turnIndicator.style.display = 'none';
+        clearAnalysis();
+
+        // Reveal all AI hands
+        renderAIHandRevealed('ai1');
+        renderAIHandRevealed('ai2');
+
+        var title = '';
+        var body = '';
+
+        if (result.type === 'domino') {
+            var winnerLabel = engine.getPlayerLabel(result.winner);
+            title = winnerLabel + ' Domino!';
+            body = '<div class="result-line">' + winnerLabel + ' played all tiles.</div>';
+            body += '<div class="result-line">Points awarded: <span class="result-highlight">+' + result.points + '</span></div>';
+
+            // Show pip details for losers
+            var others = D.getOtherPlayers(result.winner);
+            for (var i = 0; i < others.length; i++) {
+                var label = engine.getPlayerLabel(others[i]);
+                var pips = result.pipDetails[others[i]];
+                body += '<div class="result-line result-detail">' + label + ': ' + pips + ' pips remaining</div>';
+            }
+        } else if (result.type === 'block') {
+            var winnerLabel = engine.getPlayerLabel(result.winner);
+            title = 'Blocked! ' + winnerLabel + ' Wins';
+            body = '<div class="result-line">Board is locked — lowest pip count wins.</div>';
+
+            // Show all pip counts
+            for (var i = 0; i < D.PLAYERS.length; i++) {
+                var p = D.PLAYERS[i];
+                var label = engine.getPlayerLabel(p);
+                var pips = result.pipCounts[p];
+                var isWinner = (p === result.winner);
+                body += '<div class="result-line ' + (isWinner ? 'result-highlight-line' : 'result-detail') + '">' +
+                    label + ': ' + pips + ' pips' + (isWinner ? ' ★' : '') + '</div>';
+            }
+
+            body += '<div class="result-line" style="margin-top:8px;">Points awarded to ' + winnerLabel +
+                ': <span class="result-highlight">+' + result.points + '</span></div>';
+        }
+
+        // Show score summary
+        body += '<div class="result-line result-score-line" style="margin-top:12px;opacity:0.8;">' +
+            'Score — You: ' + engine.matchScore.human +
+            ' | AI-1: ' + engine.matchScore.ai1 +
+            ' | AI-2: ' + engine.matchScore.ai2 + '</div>';
+
+        els.resultTitle.textContent = title;
+        els.resultBody.innerHTML = body;
+
+        // Set button text
+        document.getElementById('play-again-btn').textContent = 'Play Again';
+
+        els.resultOverlay.style.display = 'flex';
+    }
+
+    function onReviewHand() {
+        els.resultOverlay.style.display = 'none';
+        var historyLen = engine.hand.moveHistory.length;
+        viewIndex = historyLen - 1;
+        enterReviewMode();
+    }
+
+    function onPlayAgain() {
+        els.resultOverlay.style.display = 'none';
+        els.startOverlay.style.display = 'flex';
+    }
+
+    // ============================================================
+    // Snake Layout Algorithm
+    // ============================================================
+
+    function getCellSize() {
+        var cs = getComputedStyle(document.documentElement);
+        var tileH = parseInt(cs.getPropertyValue('--tile-h'), 10) || 34;
+        return tileH;
+    }
+
+    function getTileDims() {
+        var cs = getComputedStyle(document.documentElement);
+        var tw = parseInt(cs.getPropertyValue('--tile-w'), 10) || 64;
+        var th = parseInt(cs.getPropertyValue('--tile-h'), 10) || 34;
+        return { tw: tw, th: th };
+    }
+
+    function computeSnakeLayout(boardTiles, containerWidthPx) {
+        var dims = getTileDims();
+        var tw = dims.tw;
+        var th = dims.th;
+        var gap = 2;
+
+        var layouts = [];
+        if (boardTiles.length === 0) return layouts;
+
+        var maxHorizPx = containerWidthPx - 20;
+        var margin = tw + gap;
+
+        var cx = 0;
+        var cy = 0;
+        var dir = DIR_RIGHT;
+
+        for (var i = 0; i < boardTiles.length; i++) {
+            var p = boardTiles[i];
+            var isDouble = p.tile.isDouble();
+            var layout = {
+                placement: p,
+                pixelX: 0, pixelY: 0,
+                widthPx: 0, heightPx: 0,
+                dir: dir, index: i
+            };
+
+            if (dir === DIR_RIGHT || dir === DIR_LEFT) {
+                if (isDouble) {
+                    layout.widthPx = th;
+                    layout.heightPx = tw;
+                    if (dir === DIR_RIGHT) {
+                        layout.pixelX = cx;
+                        layout.pixelY = cy - (tw - th) / 2;
+                        cx += th + gap;
+                    } else {
+                        cx -= (th + gap);
+                        layout.pixelX = cx;
+                        layout.pixelY = cy - (tw - th) / 2;
+                    }
+                } else {
+                    layout.widthPx = tw;
+                    layout.heightPx = th;
+                    if (dir === DIR_RIGHT) {
+                        layout.pixelX = cx;
+                        layout.pixelY = cy;
+                        cx += tw + gap;
+                    } else {
+                        cx -= (tw + gap);
+                        layout.pixelX = cx;
+                        layout.pixelY = cy;
+                    }
+                }
+            } else {
+                if (isDouble) {
+                    layout.widthPx = tw;
+                    layout.heightPx = th;
+                    if (dir === DIR_DOWN) {
+                        layout.pixelX = cx - (tw - th) / 2;
+                        layout.pixelY = cy;
+                        cy += th + gap;
+                    } else {
+                        cy -= (th + gap);
+                        layout.pixelX = cx - (tw - th) / 2;
+                        layout.pixelY = cy;
+                    }
+                } else {
+                    layout.widthPx = th;
+                    layout.heightPx = tw;
+                    if (dir === DIR_DOWN) {
+                        layout.pixelX = cx;
+                        layout.pixelY = cy;
+                        cy += tw + gap;
+                    } else {
+                        cy -= (tw + gap);
+                        layout.pixelX = cx;
+                        layout.pixelY = cy;
+                    }
+                }
+            }
+
+            layouts.push(layout);
+
+            if (i < boardTiles.length - 1) {
+                if (dir === DIR_RIGHT && cx > maxHorizPx - margin) {
+                    var dropAmount = tw + gap * 4;
+                    cy += dropAmount;
+                    dir = DIR_LEFT;
+                } else if (dir === DIR_LEFT && cx < margin) {
+                    var dropAmount = tw + gap * 4;
+                    cy += dropAmount;
+                    dir = DIR_RIGHT;
+                }
+            }
+        }
+
+        // Bounding box and centering
+        var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (var i = 0; i < layouts.length; i++) {
+            var l = layouts[i];
+            minX = Math.min(minX, l.pixelX);
+            minY = Math.min(minY, l.pixelY);
+            maxX = Math.max(maxX, l.pixelX + l.widthPx);
+            maxY = Math.max(maxY, l.pixelY + l.heightPx);
+        }
+
+        var chainWidth = maxX - minX;
+        var chainHeight = maxY - minY;
+
+        var offsetX = Math.max(10, (containerWidthPx - chainWidth) / 2) - minX;
+        var offsetY = 10 - minY;
+
+        for (var i = 0; i < layouts.length; i++) {
+            layouts[i].pixelX += offsetX;
+            layouts[i].pixelY += offsetY;
+        }
+
+        currentBounds = { width: chainWidth + 20, height: chainHeight + 20 };
+        return layouts;
+    }
+
+    // ============================================================
+    // Rendering
+    // ============================================================
+
+    function createHalfElement(value) {
+        var half = document.createElement('div');
+        half.className = 'tile-half';
+        half.setAttribute('data-value', value);
+        var positions = PIP_PATTERNS[value] || [];
+
+        for (var i = 0; i < 9; i++) {
+            var pip = document.createElement('div');
+            pip.className = positions.indexOf(i) !== -1 ? 'pip' : 'pip pip--hidden';
+            half.appendChild(pip);
+        }
+        return half;
+    }
+
+    function createTileElement(tile, isVertical) {
+        var el = document.createElement('div');
+        el.className = 'tile ' + (isVertical ? 'tile--vertical' : 'tile--horizontal');
+
+        var leftVal = isVertical ? tile.high : tile.low;
+        var rightVal = isVertical ? tile.low : tile.high;
+
+        el.appendChild(createHalfElement(leftVal));
+        el.appendChild(createHalfElement(rightVal));
+        return el;
+    }
+
+    function createSnakeBoardTileElement(layout) {
+        var p = layout.placement;
+        var tile = p.tile;
+        var dir = layout.dir;
+        var isDouble = tile.isDouble();
+        var el = document.createElement('div');
+
+        var isHorizTravel = (dir === DIR_RIGHT || dir === DIR_LEFT);
+        var useVerticalClass;
+
+        if (isDouble) {
+            useVerticalClass = isHorizTravel;
+        } else {
+            useVerticalClass = !isHorizTravel;
+        }
+
+        el.className = 'tile tile--board tile--placed snake-tile ' +
+            (useVerticalClass ? 'tile--vertical' : 'tile--horizontal');
+
+        var firstVal, secondVal;
+
+        if (isDouble) {
+            firstVal = tile.high;
+            secondVal = tile.low;
+        } else {
+            if (p.flipped) {
+                firstVal = tile.high;
+                secondVal = tile.low;
+            } else {
+                firstVal = tile.low;
+                secondVal = tile.high;
+            }
+
+            if (dir === DIR_LEFT || dir === DIR_UP) {
+                var tmp = firstVal;
+                firstVal = secondVal;
+                secondVal = tmp;
+            }
+        }
+
+        el.appendChild(createHalfElement(firstVal));
+        el.appendChild(createHalfElement(secondVal));
+        return el;
+    }
+
+    function createBackTile() {
+        var el = document.createElement('div');
+        el.className = 'tile tile--back';
+        return el;
+    }
+
+    function renderSnakeBoard(boardTiles) {
+        els.board.innerHTML = '';
+        els.board.appendChild(els.boardLeftMarker);
+        els.board.appendChild(els.boardRightMarker);
+
+        if (boardTiles.length === 0) {
+            els.board.style.width = '100%';
+            els.board.style.height = '100%';
+            currentLayout = [];
+            currentBounds = null;
+            return;
+        }
+
+        var containerWidth = els.boardArea.clientWidth;
+        var layouts = computeSnakeLayout(boardTiles, containerWidth);
+        currentLayout = layouts;
+
+        if (currentBounds) {
+            els.board.style.width = Math.max(containerWidth, currentBounds.width) + 'px';
+            els.board.style.height = currentBounds.height + 'px';
+        }
+
+        for (var i = 0; i < layouts.length; i++) {
+            var layout = layouts[i];
+            var el = createSnakeBoardTileElement(layout);
+            el.style.left = layout.pixelX + 'px';
+            el.style.top = layout.pixelY + 'px';
+            els.board.appendChild(el);
+        }
+
+        scrollToLatestTile(layouts);
+    }
+
+    function scrollToLatestTile(layouts) {
+        if (layouts.length === 0) return;
+        var latest = layouts[layouts.length - 1];
+        var areaWidth = els.boardArea.clientWidth;
+        var areaHeight = els.boardArea.clientHeight;
+
+        var scrollLeft = latest.pixelX - areaWidth / 2 + latest.widthPx / 2;
+        var scrollTop = latest.pixelY - areaHeight / 2 + latest.heightPx / 2;
+
+        els.boardArea.scrollTo({
+            left: Math.max(0, scrollLeft),
+            top: Math.max(0, scrollTop),
+            behavior: 'smooth'
+        });
+    }
+
+    function renderBoard() {
+        var boardTiles = engine.hand.board.tiles;
+        renderSnakeBoard(boardTiles);
+    }
+
+    function renderBoardFromState(board) {
+        renderSnakeBoard(board.tiles);
+    }
+
+    function renderHumanHand() {
+        els.humanHand.innerHTML = '';
+        var tiles = engine.hand.humanHand.tiles;
+        var legalMoves = engine.getLegalMoves('human');
+
+        var playableTileIds = {};
+        for (var i = 0; i < legalMoves.length; i++) {
+            playableTileIds[legalMoves[i].tile.id] = true;
+        }
+
+        for (var i = 0; i < tiles.length; i++) {
+            var tile = tiles[i];
+            var el = createTileElement(tile, false);
+            var isPlayable = !!playableTileIds[tile.id];
+
+            if (isPlayable && !isProcessing && engine.hand.currentPlayer === 'human') {
+                el.classList.add('tile--playable');
+            } else if (!isPlayable) {
+                el.classList.add('tile--disabled');
+            }
+
+            if (selectedTile === tile) {
+                el.classList.add('tile--selected');
+            }
+
+            (function (t) {
+                el.addEventListener('click', function () { onTileClicked(t); });
+            })(tile);
+
+            els.humanHand.appendChild(el);
+        }
+
+        els.humanTileCount.textContent = '(' + tiles.length + ')';
+    }
+
+    function disableHumanHand() {
+        var tileEls = els.humanHand.querySelectorAll('.tile');
+        for (var i = 0; i < tileEls.length; i++) {
+            tileEls[i].classList.remove('tile--playable');
+            tileEls[i].classList.add('tile--disabled');
+        }
+    }
+
+    function renderAIHand(player) {
+        var handEl = (player === 'ai1') ? els.ai1Hand : els.ai2Hand;
+        var countEl = (player === 'ai1') ? els.ai1TileCount : els.ai2TileCount;
+        var hand = engine.getHand(player);
+
+        handEl.innerHTML = '';
+        var count = hand.count();
+        for (var i = 0; i < count; i++) {
+            handEl.appendChild(createBackTile());
+        }
+        countEl.textContent = '(' + count + ')';
+    }
+
+    function renderAIHandRevealed(player) {
+        var handEl = (player === 'ai1') ? els.ai1Hand : els.ai2Hand;
+        var countEl = (player === 'ai1') ? els.ai1TileCount : els.ai2TileCount;
+        var hand = engine.getHand(player);
+
+        handEl.innerHTML = '';
+        var tiles = hand.tiles;
+        for (var i = 0; i < tiles.length; i++) {
+            var el = createTileElement(tiles[i], false);
+            el.classList.add('tile--board');
+            handEl.appendChild(el);
+        }
+        countEl.textContent = '(' + tiles.length + ')';
+    }
+
+    // ============================================================
+    // End Markers
+    // ============================================================
+
+    function showEndMarkers(moves) {
+        var hasLeft = false, hasRight = false;
+        for (var i = 0; i < moves.length; i++) {
+            if (moves[i].end === 'left') hasLeft = true;
+            if (moves[i].end === 'right') hasRight = true;
+        }
+
+        if (currentLayout.length === 0) {
+            var cx = els.boardArea.clientWidth / 2 - 20;
+            var cy = els.boardArea.clientHeight / 2 - 20;
+            if (hasLeft) {
+                els.boardLeftMarker.style.left = (cx - 50) + 'px';
+                els.boardLeftMarker.style.top = cy + 'px';
+                els.boardLeftMarker.style.display = 'flex';
+                els.boardLeftMarker.classList.add('glow');
+            }
+            if (hasRight) {
+                els.boardRightMarker.style.left = (cx + 50) + 'px';
+                els.boardRightMarker.style.top = cy + 'px';
+                els.boardRightMarker.style.display = 'flex';
+                els.boardRightMarker.classList.add('glow');
+            }
+            return;
+        }
+
+        var first = currentLayout[0];
+        var last = currentLayout[currentLayout.length - 1];
+
+        if (hasLeft) {
+            var mx, my;
+            switch (first.dir) {
+                case DIR_RIGHT: mx = first.pixelX - 44; my = first.pixelY + (first.heightPx - 40) / 2; break;
+                case DIR_LEFT: mx = first.pixelX + first.widthPx + 4; my = first.pixelY + (first.heightPx - 40) / 2; break;
+                case DIR_DOWN: mx = first.pixelX + (first.widthPx - 40) / 2; my = first.pixelY - 44; break;
+                case DIR_UP: mx = first.pixelX + (first.widthPx - 40) / 2; my = first.pixelY + first.heightPx + 4; break;
+                default: mx = first.pixelX - 44; my = first.pixelY;
+            }
+            els.boardLeftMarker.style.left = mx + 'px';
+            els.boardLeftMarker.style.top = my + 'px';
+            els.boardLeftMarker.style.display = 'flex';
+            els.boardLeftMarker.classList.add('glow');
+        }
+
+        if (hasRight) {
+            var mx, my;
+            switch (last.dir) {
+                case DIR_RIGHT: mx = last.pixelX + last.widthPx + 4; my = last.pixelY + (last.heightPx - 40) / 2; break;
+                case DIR_LEFT: mx = last.pixelX - 44; my = last.pixelY + (last.heightPx - 40) / 2; break;
+                case DIR_DOWN: mx = last.pixelX + (last.widthPx - 40) / 2; my = last.pixelY + last.heightPx + 4; break;
+                case DIR_UP: mx = last.pixelX + (last.widthPx - 40) / 2; my = last.pixelY - 44; break;
+                default: mx = last.pixelX + last.widthPx + 4; my = last.pixelY;
+            }
+            els.boardRightMarker.style.left = mx + 'px';
+            els.boardRightMarker.style.top = my + 'px';
+            els.boardRightMarker.style.display = 'flex';
+            els.boardRightMarker.classList.add('glow');
+        }
+    }
+
+    function hideEndMarkers() {
+        els.boardLeftMarker.style.display = 'none';
+        els.boardRightMarker.style.display = 'none';
+        els.boardLeftMarker.classList.remove('glow');
+        els.boardRightMarker.classList.remove('glow');
+    }
+
+    // ============================================================
+    // History Navigation
+    // ============================================================
+
+    function reconstructStateAt(moveIndex) {
+        var board = new D.Board();
+        var humanTiles = initialHumanTiles.slice();
+        var ai1Tiles = initialAI1Tiles.slice();
+        var ai2Tiles = initialAI2Tiles.slice();
+
+        var history = engine.hand.moveHistory;
+        var end = Math.min(moveIndex, history.length - 1);
+
+        for (var i = 0; i <= end; i++) {
+            var move = history[i];
+            if (move.pass) continue;
+
+            board.place(move.tile, move.end);
+
+            var tilesArr;
+            if (move.player === 'human') tilesArr = humanTiles;
+            else if (move.player === 'ai1') tilesArr = ai1Tiles;
+            else tilesArr = ai2Tiles;
+
+            var idx = -1;
+            for (var k = 0; k < tilesArr.length; k++) {
+                if (tilesArr[k].id === move.tile.id) { idx = k; break; }
+            }
+            if (idx !== -1) tilesArr.splice(idx, 1);
+        }
+
+        return { board: board, humanTiles: humanTiles, ai1Tiles: ai1Tiles, ai2Tiles: ai2Tiles };
+    }
+
+    function goBackward() {
+        if (!engine || !engine.hand) return;
+        if (isProcessing) return;
+
+        var historyLen = engine.hand.moveHistory.length;
+        if (historyLen === 0) return;
+
+        if (viewIndex === -1) {
+            viewIndex = historyLen - 2;
+        } else {
+            viewIndex--;
+        }
+
+        if (viewIndex < -1) viewIndex = -1;
+        enterReviewMode();
+    }
+
+    function goForward() {
+        if (!engine || !engine.hand) return;
+
+        var historyLen = engine.hand.moveHistory.length;
+        if (viewIndex === -1 && !isReviewing) return;
+
+        viewIndex++;
+
+        if (viewIndex >= historyLen - 1) {
+            if (handOver) {
+                exitReviewToHandOver();
+            } else {
+                exitReviewMode();
+            }
+            return;
+        }
+
+        enterReviewMode();
+    }
+
+    function enterReviewMode() {
+        isReviewing = true;
+
+        var state = reconstructStateAt(viewIndex);
+        renderBoardFromState(state.board);
+        renderHumanHandFromState(state.humanTiles);
+        renderAIHandFromState('ai1', state.ai1Tiles);
+        renderAIHandFromState('ai2', state.ai2Tiles);
+
+        var historyLen = engine.hand.moveHistory.length;
+        var statusText = '';
+        if (viewIndex === -1) {
+            statusText = 'Reviewing: Initial deal';
+        } else {
+            var move = engine.hand.moveHistory[viewIndex];
+            var who = engine.getPlayerLabel(move.player);
+            if (move.pass) {
+                statusText = 'Move ' + (viewIndex + 1) + '/' + historyLen + ': ' + who + ' passed';
+            } else {
+                statusText = 'Move ' + (viewIndex + 1) + '/' + historyLen + ': ' + who + ' played ' + move.tile.toString();
+            }
+        }
+
+        els.statusMessage.innerHTML = statusText;
+        els.statusMessage.classList.add('reviewing');
+        els.passBtn.style.display = 'none';
+        hideEndMarkers();
+        updateNavButtons();
+    }
+
+    function exitReviewMode() {
+        viewIndex = -1;
+        isReviewing = false;
+        els.statusMessage.classList.remove('reviewing');
+
+        renderBoard();
+        renderHumanHand();
+        renderAIHand('ai1');
+        renderAIHand('ai2');
+        updateNavButtons();
+
+        if (engine.hand.currentPlayer === 'human') {
+            startHumanTurn();
+        } else {
+            var label = engine.getPlayerLabel(engine.hand.currentPlayer);
+            setStatus(label + ' is thinking...');
+        }
+    }
+
+    function exitReviewToHandOver() {
+        viewIndex = -1;
+        isReviewing = false;
+        els.statusMessage.classList.remove('reviewing');
+
+        renderBoard();
+        renderHumanHand();
+        renderAIHandRevealed('ai1');
+        renderAIHandRevealed('ai2');
+
+        els.navBackward.style.display = 'none';
+        els.navForward.style.display = 'none';
+        clearAnalysis();
+
+        setStatus('Round over');
+        els.resultOverlay.style.display = 'flex';
+    }
+
+    function updateNavButtons() {
+        if (!els.navBackward || !els.navForward) return;
+
+        if (!engine || !engine.hand || engine.hand.moveHistory.length === 0) {
+            els.navBackward.style.display = 'none';
+            els.navForward.style.display = 'none';
+            return;
+        }
+
+        els.navBackward.style.display = 'inline-block';
+        els.navForward.style.display = 'inline-block';
+
+        if ((isReviewing && viewIndex <= -1) || isProcessing) {
+            els.navBackward.disabled = true;
+        } else {
+            els.navBackward.disabled = false;
+        }
+
+        if (!isReviewing) {
+            els.navForward.disabled = true;
+        } else {
+            els.navForward.disabled = false;
+        }
+    }
+
+    // --- Review render helpers ---
+    function renderHumanHandFromState(tiles) {
+        els.humanHand.innerHTML = '';
+        for (var i = 0; i < tiles.length; i++) {
+            var el = createTileElement(tiles[i], false);
+            el.classList.add('tile--disabled');
+            els.humanHand.appendChild(el);
+        }
+        els.humanTileCount.textContent = '(' + tiles.length + ')';
+    }
+
+    function renderAIHandFromState(player, tiles) {
+        var handEl = (player === 'ai1') ? els.ai1Hand : els.ai2Hand;
+        var countEl = (player === 'ai1') ? els.ai1TileCount : els.ai2TileCount;
+
+        handEl.innerHTML = '';
+        for (var i = 0; i < tiles.length; i++) {
+            handEl.appendChild(createBackTile());
+        }
+        countEl.textContent = '(' + tiles.length + ')';
+    }
+
+    // ============================================================
+    // Analysis Panel
+    // ============================================================
+
+    function renderAnalysis(analysis, chosenTileId, chosenEnd) {
+        if (!els.analysisList || !els.analysisPanel) return;
+        if (!analysis || analysis.length === 0) {
+            els.analysisPanel.style.display = 'none';
+            return;
+        }
+
+        els.analysisList.innerHTML = '';
+
+        for (var i = 0; i < analysis.length; i++) {
+            var entry = analysis[i];
+            var pill = document.createElement('span');
+            var tileId = entry.tileLow + '-' + entry.tileHigh;
+            var isBest = (tileId === chosenTileId && entry.end === chosenEnd);
+            pill.className = 'analysis-pill' + (isBest ? ' analysis-pill--best' : '');
+
+            var endLabel = entry.end === 'left' ? 'L' : 'R';
+            var scoreSign = entry.score >= 0 ? '+' : '';
+
+            pill.innerHTML = '[' + entry.tileLow + '|' + entry.tileHigh + ']' + endLabel +
+                ' <span class="pill-score">' + scoreSign + Math.round(entry.score) + '</span>';
+
+            els.analysisList.appendChild(pill);
+        }
+
+        els.analysisPanel.style.display = 'block';
+    }
+
+    function clearAnalysis() {
+        if (!els.analysisPanel) return;
+        els.analysisPanel.style.display = 'none';
+        if (els.analysisList) els.analysisList.innerHTML = '';
+    }
+
+    // ============================================================
+    // Utils
+    // ============================================================
+
+    function updateScoreboard() {
+        els.humanScore.textContent = engine.matchScore.human;
+        els.ai1Score.textContent = engine.matchScore.ai1;
+        els.ai2Score.textContent = engine.matchScore.ai2;
+    }
+
+    function setStatus(msg) {
+        els.statusMessage.textContent = msg;
+    }
+
+    // ---- Init on DOM load ----
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
+
+})(window.Domino);
