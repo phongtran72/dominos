@@ -220,20 +220,23 @@ body {
 }
 
 /* --- Analysis Panel --- */
-#analysis-panel {
+#analysis-panel,
+#hint-panel {
   flex-shrink: 0;
   padding: 2px 12px 4px;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
 }
 
-#analysis-label {
+#analysis-label,
+#hint-label {
   font-size: 0.6rem;
   color: rgba(255, 255, 255, 0.45);
   margin-bottom: 3px;
 }
 
-#analysis-list {
+#analysis-list,
+#hint-list {
   display: flex;
   gap: 6px;
   flex-wrap: nowrap;
@@ -636,6 +639,31 @@ body {
   color: #fff;
 }
 
+.btn-hints {
+  background: rgba(255, 255, 255, 0.12);
+  color: #7ec8e3;
+  border: 1px solid rgba(126, 200, 227, 0.4);
+  padding: 4px 14px;
+  font-size: 0.75rem;
+  min-height: 32px;
+  border-radius: 6px;
+}
+
+.btn-hints:hover {
+  background: rgba(126, 200, 227, 0.2);
+  color: #fff;
+}
+
+.btn-hints--off {
+  color: #888;
+  border-color: rgba(136, 136, 136, 0.3);
+}
+
+.btn-hints--off:hover {
+  background: rgba(136, 136, 136, 0.15);
+  color: #aaa;
+}
+
 .btn-nav {
   background: rgba(255, 255, 255, 0.12);
   color: #d4f0d4;
@@ -987,7 +1015,8 @@ body {
     font-size: 0.6rem;
   }
 
-  #analysis-label {
+  #analysis-label,
+  #hint-label {
     font-size: 0.55rem;
   }
 
@@ -1164,11 +1193,13 @@ body {
     min-width: 40px;
   }
 
-  #analysis-panel {
+  #analysis-panel,
+  #hint-panel {
     padding: 1px 8px 2px;
   }
 
-  #analysis-label {
+  #analysis-label,
+  #hint-label {
     font-size: 0.5rem;
   }
 

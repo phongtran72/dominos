@@ -57,6 +57,7 @@
       <button id="nav-forward" class="btn btn-nav" style="display:none;" disabled>&raquo;</button>
       <button id="pass-btn" class="btn btn-pass" style="display:none;">Pass</button>
       <button id="undo-btn" class="btn btn-undo" style="display:none;">Undo</button>
+      <button id="hints-toggle-btn" class="btn btn-hints" style="display:none;">Hints: On</button>
     </div>
 
     <!-- Eval Bar -->
@@ -84,6 +85,12 @@
     <div id="analysis-panel" style="display:none;">
       <div id="analysis-label">AI considered (best → worst):</div>
       <div id="analysis-list"></div>
+    </div>
+
+    <!-- Human Hint Panel -->
+    <div id="hint-panel" style="display:none;">
+      <div id="hint-label">Suggested moves (best → worst):</div>
+      <div id="hint-list"></div>
     </div>
 
     <!-- Human Hand -->

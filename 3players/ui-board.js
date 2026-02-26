@@ -549,9 +549,7 @@
         renderHumanHand();
         updateScoreboard();
 
-        if (lastAIAnalysis && lastAIAnalysis.analysis) {
-            renderAnalysis(lastAIAnalysis.analysis, move.tile.id, move.end);
-        }
+        clearAnalysis();
 
         if (result.handEnd) {
             setTimeout(function () { showHandResult(result.handEnd); }, 600);

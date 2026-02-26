@@ -34,6 +34,7 @@
   var difficulty = 'hard';
   var selectedEngine = 'new'; // 'old' or 'new'
   var openTiles = true;       // show AI tiles face-up
+  var showHints = true;       // show AI-recommended moves for human
   var matchPoints = 100;      // target score: 1, 50, or 100
   var isProcessing = false;
 
@@ -278,7 +279,11 @@
     els.analysisPanel = document.getElementById('analysis-panel');
     els.analysisList = document.getElementById('analysis-list');
 
+    els.hintPanel = document.getElementById('hint-panel');
+    els.hintList = document.getElementById('hint-list');
+
     els.undoBtn = document.getElementById('undo-btn');
+    els.hintsToggleBtn = document.getElementById('hints-toggle-btn');
 
     els.startOverlay = document.getElementById('start-overlay');
     els.leaderOverlay = document.getElementById('leader-overlay');
@@ -412,6 +417,11 @@
     // Undo button
     els.undoBtn.addEventListener('click', onUndo);
 
+    // In-game hints toggle
+    if (els.hintsToggleBtn) {
+      els.hintsToggleBtn.addEventListener('click', onToggleHints);
+    }
+
     // History navigation
     els.navBackward.addEventListener('click', goBackward);
     els.navForward.addEventListener('click', goForward);
@@ -512,6 +522,7 @@
 
     updateEvalBar(0);
     clearAnalysis();
+    clearHint();
     updateScoreboard();
     renderAIHand();
     renderHumanHand();
@@ -519,6 +530,12 @@
     hideEndMarkers();
     updateNavButtons();
     updateUndoButton();
+
+    // Show in-game hints toggle (only on Hard difficulty)
+    if (els.hintsToggleBtn) {
+      els.hintsToggleBtn.style.display = (difficulty === 'hard') ? 'inline-block' : 'none';
+      updateHintsToggle();
+    }
 
     if (leader === 'human') {
       startHumanTurn();
@@ -598,6 +615,8 @@
       clearAnalysis();
     }
 
+    clearHint();
+
     if (engine.hand.currentPlayer === 'ai') {
       setStatus('AI is thinking...');
       disableHumanHand();
@@ -649,6 +668,8 @@
       clearAnalysis();
     }
 
+    clearHint();
+
     if (engine.hand.currentPlayer === 'ai') {
       setStatus('AI is thinking...');
       disableHumanHand();
@@ -667,6 +688,61 @@
       els.undoBtn.style.display = 'inline-block';
     } else {
       els.undoBtn.style.display = 'none';
+    }
+  }
+
+  // --- Human Hint: AI-recommended moves for human ---
+  function computeHumanHint() {
+    if (difficulty !== 'hard') return null;
+    var legalMoves = engine.getLegalMoves('human');
+    if (legalMoves.length <= 1) return null;
+
+    // Swap hands so AI engine evaluates from human's perspective
+    var hand = engine.hand;
+    var origAi = hand.aiHand;
+    var origHuman = hand.humanHand;
+    hand.aiHand = origHuman;
+    hand.humanHand = origAi;
+
+    var swappedMoves = engine.getLegalMoves('ai');
+    var result = ai.chooseMove(swappedMoves, engine);
+
+    // Swap back immediately
+    hand.aiHand = origAi;
+    hand.humanHand = origHuman;
+
+    return result;
+  }
+
+  function updateHintsToggle() {
+    if (!els.hintsToggleBtn) return;
+    els.hintsToggleBtn.textContent = showHints ? 'Hints: On' : 'Hints: Off';
+    if (showHints) {
+      els.hintsToggleBtn.classList.remove('btn-hints--off');
+    } else {
+      els.hintsToggleBtn.classList.add('btn-hints--off');
+    }
+  }
+
+  function onToggleHints() {
+    showHints = !showHints;
+    updateHintsToggle();
+
+    // If it's currently human's turn, immediately show/hide hint panel
+    if (engine && engine.hand && !isProcessing && !isReviewing && !handOver) {
+      var legalMoves = engine.getLegalMoves('human');
+      if (engine.hand.currentPlayer === 'human' && legalMoves.length > 0) {
+        if (showHints) {
+          var hint = computeHumanHint();
+          if (hint && hint.analysis && hint.analysis.length > 0) {
+            renderHint(hint.analysis);
+          } else {
+            clearHint();
+          }
+        } else {
+          clearHint();
+        }
+      }
     }
   }
 
@@ -689,6 +765,18 @@
     renderHumanHand();
     updateNavButtons();
     updateUndoButton();
+
+    // Show AI-recommended moves for human (if hints enabled)
+    if (showHints) {
+      var hint = computeHumanHint();
+      if (hint && hint.analysis && hint.analysis.length > 0) {
+        renderHint(hint.analysis);
+      } else {
+        clearHint();
+      }
+    } else {
+      clearHint();
+    }
   }
 
   function onTileClicked(tile) {
@@ -751,6 +839,7 @@
     var humanEval = ai.evaluatePosition(engine);
     updateEvalBar(humanEval);
     clearAnalysis();
+    clearHint();
 
     var history = engine.hand.moveHistory;
     if (history.length > 0) {
@@ -1148,6 +1237,7 @@
     els.navForward.style.display = 'none';
     els.undoBtn.style.display = 'none';
     clearAnalysis();
+    clearHint();
 
     renderAIHandRevealed();
 
@@ -2257,6 +2347,7 @@
 
   function enterReviewMode() {
     isReviewing = true;
+    clearHint();
 
     var state = reconstructStateAt(viewIndex);
 
@@ -2362,6 +2453,7 @@
     els.navForward.style.display = 'none';
     els.undoBtn.style.display = 'none';
     clearAnalysis();
+    clearHint();
 
     setStatus('Hand over');
 
@@ -2488,6 +2580,39 @@
     if (!els.analysisPanel) return;
     els.analysisPanel.style.display = 'none';
     if (els.analysisList) els.analysisList.innerHTML = '';
+  }
+
+  function renderHint(analysis) {
+    if (!els.hintList || !els.hintPanel) return;
+    if (!analysis || analysis.length === 0) {
+      els.hintPanel.style.display = 'none';
+      return;
+    }
+
+    els.hintList.innerHTML = '';
+
+    for (var i = 0; i < analysis.length; i++) {
+      var entry = analysis[i];
+      var pill = document.createElement('span');
+      pill.className = 'analysis-pill';
+
+      var endLabel = entry.end === 'left' ? 'L' : 'R';
+      var scoreSign = entry.score >= 0 ? '+' : '';
+      var scoreClass = entry.score > 0 ? 'pill-score--pos' : (entry.score < 0 ? 'pill-score--neg' : '');
+
+      pill.innerHTML = '[' + entry.tileId.replace('-', '|') + ']' + endLabel +
+        ' <span class="pill-score ' + scoreClass + '">' + scoreSign + Math.round(entry.score) + '</span>';
+
+      els.hintList.appendChild(pill);
+    }
+
+    els.hintPanel.style.display = 'block';
+  }
+
+  function clearHint() {
+    if (!els.hintPanel) return;
+    els.hintPanel.style.display = 'none';
+    if (els.hintList) els.hintList.innerHTML = '';
   }
 
   function updateScoreboard() {
