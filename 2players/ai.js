@@ -1,16 +1,18 @@
 // ============================================================
 // ai.js — ENHANCED AI for Draw Variant (Imperfect Information)
 //
-// 9 strategic advantages over human:
+// Strategic advantages over human:
 //   1. Perfect tile tracking (knows exactly which tiles are unseen)
 //   2. Bayesian inference (deduces opponent hand from draw/pass)
 //   3. Endpoint locking (forces opponent to draw on values they lack)
-//   4. Determinization (Monte Carlo sampling of possible hands)
+//   4. Monte Carlo lookahead (samples opponent hands, simulates 3-ply)
 //   5. Draw event analysis (extracts max info from each draw cycle)
 //   6. Draw-forcing (prefer board ends with few unseen matches)
 //   7. Boneyard depletion aggression (scale up as boneyard shrinks)
 //   8. Bloated hand exploitation (steer toward blocks when human drew many)
 //   9. Proactive scarcity (dominate suits early to create future locks)
+//  10. Chain detection (plan consecutive plays, keep hand connected)
+//  11. Endgame urgency (prioritize going out when hand is small)
 //
 // Easy: random legal move
 // Hard: full strategic engine with all advantages
@@ -132,7 +134,7 @@
   }
 
   // ============================================================
-  // AIPlayer — Enhanced with tracking, inference, determinization
+  // AIPlayer — Enhanced with tracking, inference, lookahead
   // ============================================================
   class AIPlayer {
     constructor(difficulty) {
@@ -232,10 +234,9 @@
         scored.push({ move: m, score: score });
       }
 
-      // Advantage #4: Determinization — Monte Carlo sampling
-      if (this.tracker.getHumanLackedValueCount() >= 1) {
-        scored = this.applyDeterminization(scored, engine);
-      }
+      // Advantage #4: Monte Carlo lookahead — ALWAYS run (no inference gate)
+      // Sample possible opponent hands and simulate 3 turns ahead
+      scored = this.applyLookahead(scored, engine);
 
       // Sort by score descending
       scored.sort(function (a, b) { return b.score - a.score; });
@@ -254,7 +255,7 @@
       return {
         move: scored[0].move,
         bestScore: scored[0].score,
-        depth: 1,
+        depth: 3,
         nodes: legalMoves.length,
         analysis: analysis
       };
@@ -267,11 +268,12 @@
       var tracker = this.tracker;
 
       // === 1. Play heavy tiles first (reduce pip risk) ===
-      score += tile.pipCount() * 2;
+      // Reduced weight — important but shouldn't dominate strategy
+      score += tile.pipCount() * 1;
 
       // === 2. Play doubles early ===
       if (tile.isDouble()) {
-        score += 8;
+        score += 5;
       }
 
       // === 3. Exploit opponent's passed values (basic) ===
@@ -285,8 +287,6 @@
       }
 
       // === Advantage #3: Endpoint locking with Bayesian tracking ===
-      // If tracker knows human lacks a value, MASSIVE bonus for leaving
-      // that value as a board end — forces them to draw
       if (newEnd !== null && tracker.humanLacks(newEnd)) {
         score += 25;
       }
@@ -295,7 +295,7 @@
       if (newEnd !== null) {
         var otherEnd = this.getOtherBoardEnd(end, board, tile);
         if (otherEnd !== null && tracker.humanLacks(newEnd) && tracker.humanLacks(otherEnd)) {
-          score += 20; // devastating: human MUST draw, guaranteed
+          score += 20;
         }
       }
 
@@ -336,8 +336,6 @@
       score += suitCount * 1;
 
       // === Advantage #1+2: Board scarcity exploitation ===
-      // If many tiles of a suit are already played/in AI hand,
-      // leaving that value on the board makes it hard for human
       if (newEnd !== null) {
         var knownTilesWithValue = 0;
         for (var v = 0; v <= 6; v++) {
@@ -373,9 +371,6 @@
       }
 
       // === Advantage #6: Draw-forcing ===
-      // Even without inference, prefer board ends where few unseen tiles match.
-      // Fewer unseen matches = higher chance human must draw.
-      // This works from turn 1 — no inference needed.
       if (newEnd !== null) {
         var unseenTiles = tracker.getUnseenTiles();
         var unseenMatchingNewEnd = 0;
@@ -385,22 +380,15 @@
           var hi = parseInt(parts[1]);
           if (lo === newEnd || hi === newEnd) unseenMatchingNewEnd++;
         }
-        // Max unseen matching a value = ~6. Fewer = better for AI.
-        // Bonus: (6 - matching) * weight. If only 1 unseen tile matches, big bonus.
         var drawForceBonus = Math.max(0, 5 - unseenMatchingNewEnd) * 3;
         score += drawForceBonus;
       }
 
       // === Advantage #7: Boneyard depletion aggression ===
-      // As boneyard shrinks, scarcity and locking become more powerful.
-      // Scale up key heuristics based on how empty the boneyard is.
       var boneyardSize = boneyard.length;
-      var boneyardTotal = 10; // 28 - 9 - 9 = 10 tiles in boneyard at start
+      var boneyardTotal = 10;
       if (boneyardSize < boneyardTotal && newEnd !== null) {
-        // depletionFactor: 0.0 (full boneyard) to 1.0 (empty)
         var depletionFactor = 1 - (boneyardSize / boneyardTotal);
-        // Amplify scarcity + draw-forcing as boneyard empties
-        // At empty boneyard: up to +10 extra on scarce ends
         var knownForValue = 0;
         for (var v = 0; v <= 6; v++) {
           var id = Math.min(newEnd, v) + '-' + Math.max(newEnd, v);
@@ -409,19 +397,14 @@
           }
         }
         score += knownForValue * depletionFactor * 3;
-
-        // Stronger endpoint locking when boneyard low/empty
         if (tracker.humanLacks(newEnd)) {
           score += depletionFactor * 15;
         }
       }
 
       // === Advantage #8: Bloated hand exploitation ===
-      // If human has drawn many tiles (hand > 9), they have more pips.
-      // Steer toward blocks / tight board positions.
       if (newEnd !== null && tracker.humanHandSize > 9) {
-        var humanBloat = tracker.humanHandSize - 9; // how many extra tiles
-        // Count unseen tiles matching board ends (tightness measure)
+        var humanBloat = tracker.humanHandSize - 9;
         var unseenAll = tracker.getUnseenTiles();
         var matchingEnds = 0;
         var otherEnd = this.getOtherBoardEnd(end, board, tile);
@@ -432,25 +415,18 @@
           if (lo === newEnd || hi === newEnd) matchingEnds++;
           if (otherEnd !== null && (lo === otherEnd || hi === otherEnd)) matchingEnds++;
         }
-        // Tighter board = fewer matching = closer to block
         var tightness = Math.max(0, 8 - matchingEnds);
-        // Bonus scales with how bloated human's hand is
         score += tightness * Math.min(humanBloat, 5) * 1.5;
       }
 
       // === Advantage #9: Proactive scarcity (suit domination) ===
-      // Prefer playing tiles from suits we dominate (own most tiles of that value).
-      // This depletes the suit, making future board ends harder for human.
       if (newEnd !== null) {
-        // Count how many tiles with newEnd value the AI currently holds
         var aiHoldsWithNewEnd = 0;
         for (var i = 0; i < remainingTiles.length; i++) {
           if (remainingTiles[i].low === newEnd || remainingTiles[i].high === newEnd) {
             aiHoldsWithNewEnd++;
           }
         }
-        // If AI holds 3+ tiles of this value, it dominates the suit
-        // Leaving this value on the board means AI can always play, human often can't
         if (aiHoldsWithNewEnd >= 3) {
           score += 10;
         } else if (aiHoldsWithNewEnd >= 2) {
@@ -458,84 +434,286 @@
         }
       }
 
+      // === Advantage #10: Chain detection ===
+      // After playing this tile, can AI chain consecutive plays?
+      // Depth-2 chain: play tile → set up next play → set up play after that
+      if (newEnd !== null && remainingTiles.length > 0) {
+        var chainScore = 0;
+        var otherEnd = this.getOtherBoardEnd(end, board, tile);
+
+        // Level 1: tiles that can play on newEnd
+        for (var i = 0; i < remainingTiles.length; i++) {
+          if (remainingTiles[i].matches(newEnd)) {
+            var afterEnd = remainingTiles[i].otherSide(newEnd);
+            chainScore += 3; // each continuation = good
+
+            // Level 2: tiles that can play after level-1 tile
+            for (var j = 0; j < remainingTiles.length; j++) {
+              if (j === i) continue;
+              if (remainingTiles[j].matches(afterEnd)) {
+                chainScore += 2; // deeper chain = more value
+              }
+              // Also check the other board end for flexibility
+              if (otherEnd !== null && remainingTiles[j].matches(otherEnd)) {
+                chainScore += 1;
+              }
+            }
+          }
+        }
+        score += chainScore;
+      }
+
+      // === Advantage #11: Endgame urgency ===
+      // When AI hand is small, prioritize moves that lead to going out
+      if (remainingTiles.length <= 3 && newEnd !== null) {
+        var otherEnd = this.getOtherBoardEnd(end, board, tile);
+
+        // If only 1 tile left, can it play on either board end?
+        if (remainingTiles.length === 1) {
+          var lastTile = remainingTiles[0];
+          if (lastTile.matches(newEnd) || (otherEnd !== null && lastTile.matches(otherEnd))) {
+            score += 50; // massive bonus: guaranteed domino next turn!
+          } else {
+            score -= 15; // bad: stuck with unplayable tile
+          }
+        }
+        // If 2 tiles left, check if they chain to empty hand
+        else if (remainingTiles.length === 2) {
+          var canChainOut = false;
+          for (var i = 0; i < 2; i++) {
+            var first = remainingTiles[i];
+            var second = remainingTiles[1 - i];
+            // Can first play on newEnd, then second play on the result?
+            if (first.matches(newEnd)) {
+              var nextEnd = first.otherSide(newEnd);
+              if (second.matches(nextEnd) || (otherEnd !== null && second.matches(otherEnd))) {
+                canChainOut = true;
+              }
+            }
+            // Can first play on otherEnd?
+            if (otherEnd !== null && first.matches(otherEnd)) {
+              var nextOther = first.otherSide(otherEnd);
+              if (second.matches(newEnd) || second.matches(nextOther)) {
+                canChainOut = true;
+              }
+            }
+          }
+          if (canChainOut) {
+            score += 30; // strong bonus: can go out in 2 turns
+          }
+        }
+        // If 3 tiles left, boost flexibility heavily
+        else if (remainingTiles.length === 3) {
+          var playableCount = 0;
+          for (var i = 0; i < remainingTiles.length; i++) {
+            if (remainingTiles[i].matches(newEnd) ||
+                (otherEnd !== null && remainingTiles[i].matches(otherEnd))) {
+              playableCount++;
+            }
+          }
+          score += playableCount * 8;
+        }
+      }
+
       return score;
     }
 
     // ============================================================
-    // Advantage #4: Determinization — Monte Carlo sampling
-    // Sample N random consistent opponent hands, simulate each,
-    // and adjust move scores based on average outcomes
+    // Advantage #4: Monte Carlo 3-ply Lookahead
+    // ALWAYS runs — no inference gate. Samples random opponent
+    // hands from unseen tiles, simulates AI→Human→AI turns,
+    // evaluates resulting position.
     // ============================================================
-    applyDeterminization(scored, engine) {
+    applyLookahead(scored, engine) {
       var tracker = this.tracker;
       var SAMPLES = 30;
+      var aiHand = engine.hand.aiHand;
+      var board = engine.hand.board;
+      var boneyard = engine.hand.boneyard || [];
 
-      var possibleHumanTiles = tracker.getPossibleHumanTiles();
+      // Get unseen tiles for sampling (includes boneyard + human hand)
+      var unseenTiles = tracker.getUnseenTiles();
       var humanHandSize = tracker.humanHandSize;
 
-      if (possibleHumanTiles.length < humanHandSize || humanHandSize <= 0) {
+      if (unseenTiles.length < 1 || humanHandSize <= 0) {
         return scored;
       }
+
+      // Clamp humanHandSize to unseen count
+      var sampleSize = Math.min(humanHandSize, unseenTiles.length);
 
       for (var mi = 0; mi < scored.length; mi++) {
         var move = scored[mi].move;
         var totalOutcome = 0;
 
         for (var s = 0; s < SAMPLES; s++) {
-          // Randomly assign possible tiles to human hand
-          var shuffled = possibleHumanTiles.slice();
+          // Shuffle unseen tiles and take first N as human hand sample
+          var shuffled = unseenTiles.slice();
           for (var k = shuffled.length - 1; k > 0; k--) {
             var j = Math.floor(Math.random() * (k + 1));
             var tmp = shuffled[k]; shuffled[k] = shuffled[j]; shuffled[j] = tmp;
           }
-          var sampledHumanHand = shuffled.slice(0, Math.min(humanHandSize, shuffled.length));
+          var sampledHumanHand = shuffled.slice(0, sampleSize);
 
-          var outcome = this.evaluateMoveInWorld(move, sampledHumanHand, engine);
+          var outcome = this.simulate3Ply(move, sampledHumanHand, aiHand, board, boneyard);
           totalOutcome += outcome;
         }
 
-        scored[mi].score += (totalOutcome / SAMPLES) * 3;
+        // Weight lookahead heavily — this IS the AI's planning ability
+        scored[mi].score += (totalOutcome / SAMPLES) * 5;
       }
 
       return scored;
     }
 
-    // Evaluate a move in a simulated world
-    evaluateMoveInWorld(move, sampledHumanHand, engine) {
-      var board = engine.hand.board;
-      var newEnd = this.getNewBoardEnd(move.tile, move.end, board);
-      var otherEnd = this.getOtherBoardEnd(move.end, board, move.tile);
+    // ============================================================
+    // 3-ply simulation: AI plays → Human responds → AI responds
+    // Returns a score for the resulting position.
+    // ============================================================
+    simulate3Ply(aiMove, sampledHumanHand, aiHand, board, boneyard) {
+      var tile = aiMove.tile;
+      var end = aiMove.end;
 
+      // --- Ply 1: AI plays ---
+      var newEnd = this.getNewBoardEnd(tile, end, board);
+      var otherEnd = this.getOtherBoardEnd(end, board, tile);
       if (newEnd === null) return 0;
 
-      // Check if human can respond to the new board state
-      var humanCanPlay = false;
+      // Board ends after AI plays
+      var leftEnd1, rightEnd1;
+      if (end === 'left') {
+        leftEnd1 = newEnd;
+        rightEnd1 = (board.isEmpty()) ? tile.high : board.rightEnd;
+      } else {
+        leftEnd1 = (board.isEmpty()) ? tile.low : board.leftEnd;
+        rightEnd1 = newEnd;
+      }
+
+      // AI remaining tiles
+      var aiRemaining = [];
+      for (var i = 0; i < aiHand.tiles.length; i++) {
+        if (aiHand.tiles[i] !== tile) aiRemaining.push(aiHand.tiles[i]);
+      }
+
+      // --- Ply 2: Human responds ---
+      // Find human tiles that can play
+      var humanPlayable = [];
       for (var i = 0; i < sampledHumanHand.length; i++) {
         var parts = sampledHumanHand[i].split('-');
         var lo = parseInt(parts[0]);
         var hi = parseInt(parts[1]);
-        if (lo === newEnd || hi === newEnd || lo === otherEnd || hi === otherEnd) {
-          humanCanPlay = true;
-          break;
+        var pips = lo + hi;
+        if (lo === leftEnd1 || hi === leftEnd1) {
+          var hNewEnd = (hi === leftEnd1) ? lo : hi;
+          humanPlayable.push({ idx: i, lo: lo, hi: hi, pips: pips, end: 'left', newLeft: hNewEnd, newRight: rightEnd1 });
+        }
+        if (lo === rightEnd1 || hi === rightEnd1) {
+          var hNewEnd = (lo === rightEnd1) ? hi : lo;
+          humanPlayable.push({ idx: i, lo: lo, hi: hi, pips: pips, end: 'right', newLeft: leftEnd1, newRight: hNewEnd });
         }
       }
 
-      // Human can't play = great for us (they must draw)
-      if (!humanCanPlay) return 5;
+      // Human can't play — must draw. Great for AI!
+      if (humanPlayable.length === 0) {
+        // Bonus: AI has options + human is stuck
+        var aiOptions = 0;
+        for (var i = 0; i < aiRemaining.length; i++) {
+          if (aiRemaining[i].matches(leftEnd1) || aiRemaining[i].matches(rightEnd1)) aiOptions++;
+        }
+        return 8 + aiOptions * 2;
+      }
 
-      // Estimate pip advantage from human's weakest response
-      var minHumanResponsePips = Infinity;
-      for (var i = 0; i < sampledHumanHand.length; i++) {
-        var parts = sampledHumanHand[i].split('-');
-        var lo = parseInt(parts[0]);
-        var hi = parseInt(parts[1]);
-        if (lo === newEnd || hi === newEnd || lo === otherEnd || hi === otherEnd) {
-          var pips = lo + hi;
-          if (pips < minHumanResponsePips) minHumanResponsePips = pips;
+      // Human picks their best response:
+      // Prefer the move that leaves AI with FEWEST options (smartest opponent)
+      var bestHumanMove = null;
+      var worstForAI = Infinity;
+
+      for (var h = 0; h < humanPlayable.length; h++) {
+        var hp = humanPlayable[h];
+        // Count AI options after this human move
+        var aiOpts = 0;
+        for (var i = 0; i < aiRemaining.length; i++) {
+          if (aiRemaining[i].matches(hp.newLeft) || aiRemaining[i].matches(hp.newRight)) aiOpts++;
+        }
+        // Human picks move that minimizes AI options (ties broken by human pip dump)
+        if (aiOpts < worstForAI || (aiOpts === worstForAI && (!bestHumanMove || hp.pips > bestHumanMove.pips))) {
+          worstForAI = aiOpts;
+          bestHumanMove = hp;
         }
       }
 
-      return (minHumanResponsePips - 5) * 0.3;
+      if (!bestHumanMove) return 0;
+
+      var leftEnd2 = bestHumanMove.newLeft;
+      var rightEnd2 = bestHumanMove.newRight;
+
+      // Remove human's played tile from their sampled hand
+      var humanRemaining = sampledHumanHand.length - 1;
+
+      // --- Ply 3: AI responds ---
+      // Find AI tiles that can play on new board ends
+      var aiPlayable = [];
+      for (var i = 0; i < aiRemaining.length; i++) {
+        if (aiRemaining[i].matches(leftEnd2)) {
+          var aNewEnd = aiRemaining[i].otherSide(leftEnd2);
+          aiPlayable.push({ tile: aiRemaining[i], end: 'left', newLeft: aNewEnd, newRight: rightEnd2 });
+        }
+        if (aiRemaining[i].matches(rightEnd2)) {
+          var aNewEnd = aiRemaining[i].otherSide(rightEnd2);
+          aiPlayable.push({ tile: aiRemaining[i], end: 'right', newLeft: leftEnd2, newRight: aNewEnd });
+        }
+      }
+
+      // AI can't respond — bad
+      if (aiPlayable.length === 0) {
+        return -6;
+      }
+
+      // AI picks the move that maximizes its future options
+      var bestAIScore = -Infinity;
+      for (var a = 0; a < aiPlayable.length; a++) {
+        var ap = aiPlayable[a];
+        // Count remaining AI tiles that can play after this move
+        var futureOpts = 0;
+        var aiAfter = [];
+        for (var i = 0; i < aiRemaining.length; i++) {
+          if (aiRemaining[i] !== ap.tile) {
+            aiAfter.push(aiRemaining[i]);
+            if (aiRemaining[i].matches(ap.newLeft) || aiRemaining[i].matches(ap.newRight)) {
+              futureOpts++;
+            }
+          }
+        }
+        // Count human tiles that could play (bad for AI)
+        var humanThreats = 0;
+        for (var i = 0; i < sampledHumanHand.length; i++) {
+          if (i === bestHumanMove.idx) continue; // human already played this one
+          var parts = sampledHumanHand[i].split('-');
+          var lo = parseInt(parts[0]);
+          var hi = parseInt(parts[1]);
+          if (lo === ap.newLeft || hi === ap.newLeft || lo === ap.newRight || hi === ap.newRight) {
+            humanThreats++;
+          }
+        }
+
+        var moveScore = futureOpts * 2 - humanThreats * 1 + ap.tile.pipCount() * 0.3;
+
+        // Endgame: about to go out?
+        if (aiAfter.length === 0) {
+          moveScore += 20; // domino!
+        } else if (aiAfter.length === 1) {
+          if (aiAfter[0].matches(ap.newLeft) || aiAfter[0].matches(ap.newRight)) {
+            moveScore += 10; // one tile left and it's playable
+          }
+        }
+
+        if (moveScore > bestAIScore) bestAIScore = moveScore;
+      }
+
+      // Final position score:
+      // AI tile advantage + best AI move quality
+      var tileAdvantage = (humanRemaining - (aiRemaining.length - 1)) * 2;
+      return bestAIScore + tileAdvantage;
     }
 
     getNewBoardEnd(tile, end, board) {
