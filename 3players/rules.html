@@ -1,0 +1,585 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dominos — 3 Players Rules</title>
+  <link rel="icon" type="image/svg+xml" href="../icons/icon.svg">
+  <style>
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+      background: #1a2c5a;
+      background-image: radial-gradient(ellipse at center, #1e3568 0%, #14254a 70%, #0d1a36 100%);
+      color: #dde;
+      min-height: 100vh;
+      line-height: 1.6;
+    }
+
+    .container {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 24px 20px 60px;
+    }
+
+    h1 {
+      font-size: 1.8rem;
+      color: #f0d060;
+      text-align: center;
+      margin-bottom: 6px;
+    }
+
+    .subtitle {
+      text-align: center;
+      opacity: 0.6;
+      font-size: 0.9rem;
+      margin-bottom: 32px;
+    }
+
+    h2 {
+      font-size: 1.3rem;
+      color: #7ec8e3;
+      margin: 32px 0 12px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid rgba(126, 200, 227, 0.25);
+    }
+
+    h3 {
+      font-size: 1.05rem;
+      color: #f0d060;
+      margin: 20px 0 8px;
+    }
+
+    p {
+      margin: 8px 0;
+    }
+
+    ul,
+    ol {
+      margin: 8px 0 8px 24px;
+    }
+
+    li {
+      margin: 4px 0;
+    }
+
+    .card {
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 10px;
+      padding: 16px 20px;
+      margin: 12px 0;
+    }
+
+    .card--green {
+      border-color: rgba(96, 208, 112, 0.3);
+      background: rgba(96, 208, 112, 0.06);
+    }
+
+    .card--orange {
+      border-color: rgba(255, 138, 101, 0.3);
+      background: rgba(255, 138, 101, 0.06);
+    }
+
+    .card--purple {
+      border-color: rgba(171, 128, 240, 0.3);
+      background: rgba(171, 128, 240, 0.06);
+    }
+
+    .card--gold {
+      border-color: rgba(240, 208, 96, 0.3);
+      background: rgba(240, 208, 96, 0.06);
+    }
+
+    .tag {
+      display: inline-block;
+      font-size: 0.7rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+
+    .tag--human {
+      background: rgba(96, 208, 112, 0.2);
+      color: #60d070;
+    }
+
+    .tag--ai1 {
+      background: rgba(255, 138, 101, 0.2);
+      color: #ff8a65;
+    }
+
+    .tag--ai2 {
+      background: rgba(171, 128, 240, 0.2);
+      color: #ab80f0;
+    }
+
+    .tag--team {
+      background: rgba(240, 208, 96, 0.2);
+      color: #f0d060;
+    }
+
+    .strategy {
+      margin: 10px 0;
+      padding: 10px 14px;
+      background: rgba(255, 255, 255, 0.04);
+      border-left: 3px solid #7ec8e3;
+      border-radius: 0 6px 6px 0;
+    }
+
+    .strategy strong {
+      color: #7ec8e3;
+    }
+
+    .coop-strategy {
+      border-left-color: #f0d060;
+    }
+
+    .coop-strategy strong {
+      color: #f0d060;
+    }
+
+    .example {
+      background: rgba(126, 200, 227, 0.08);
+      border-radius: 6px;
+      padding: 10px 14px;
+      margin: 8px 0;
+      font-size: 0.9rem;
+    }
+
+    .example::before {
+      content: 'Example: ';
+      font-weight: 700;
+      color: #7ec8e3;
+    }
+
+    .highlight {
+      color: #f0d060;
+      font-weight: 700;
+    }
+
+    .color-human {
+      color: #60d070;
+    }
+
+    .color-ai1 {
+      color: #ff8a65;
+    }
+
+    .color-ai2 {
+      color: #ab80f0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0;
+      font-size: 0.9rem;
+    }
+
+    th,
+    td {
+      padding: 8px 12px;
+      text-align: left;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    th {
+      color: #7ec8e3;
+      font-weight: 600;
+    }
+
+    .back-link {
+      display: inline-block;
+      margin-top: 32px;
+      padding: 10px 24px;
+      background: rgba(126, 200, 227, 0.15);
+      color: #7ec8e3;
+      text-decoration: none;
+      border-radius: 8px;
+      font-weight: 600;
+      text-align: center;
+    }
+
+    .back-link:hover {
+      background: rgba(126, 200, 227, 0.25);
+    }
+
+    .toc {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    .toc li {
+      margin: 6px 0;
+    }
+
+    .toc a {
+      color: #7ec8e3;
+      text-decoration: none;
+    }
+
+    .toc a:hover {
+      text-decoration: underline;
+    }
+
+    .divider {
+      height: 1px;
+      background: rgba(255, 255, 255, 0.1);
+      margin: 36px 0;
+    }
+
+    @media (max-width: 480px) {
+      .container {
+        padding: 16px 14px 48px;
+      }
+
+      h1 {
+        font-size: 1.5rem;
+      }
+
+      h2 {
+        font-size: 1.15rem;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+
+    <h1>Dominos &mdash; 3 Players</h1>
+    <p class="subtitle">Complete Rules &amp; AI Strategy Guide</p>
+
+    <!-- Table of Contents -->
+    <div class="card">
+      <h3 style="margin-top:0;">Contents</h3>
+      <ul class="toc">
+        <li><a href="#general">1. General Rules</a></li>
+        <li><a href="#scoring">2. Scoring</a></li>
+        <li><a href="#match">3. Match Mode</a></li>
+        <li><a href="#independent">4. Independent Mode</a></li>
+        <li><a href="#coordinated">5. Coordinated (Team) Mode</a></li>
+        <li><a href="#ai-strategies">6. AI Strategies (Hard Difficulty)</a></li>
+        <li><a href="#controls">7. Controls &amp; UI</a></li>
+      </ul>
+    </div>
+
+    <!-- ============================================================ -->
+    <h2 id="general">1. General Rules</h2>
+    <!-- ============================================================ -->
+
+    <h3>Tile Set &amp; Dealing</h3>
+    <div class="card">
+      <ul>
+        <li>Uses a <strong>27-tile</strong> subset of the double-six set (the <code>[0|0]</code> tile is excluded).</li>
+        <li>All 27 tiles are dealt equally: <strong>9 tiles per player</strong>.</li>
+        <li>There is <strong>no boneyard</strong> &mdash; every tile is in someone's hand from the start.</li>
+        <li>This makes it a <em>perfect-information</em> game once passes reveal opponent holdings.</li>
+      </ul>
+    </div>
+
+    <h3>Players &amp; Turn Order</h3>
+    <div class="card">
+      <p>Three players take turns in fixed order:</p>
+      <ol>
+        <li><span class="tag tag--human">You</span> Human (green)</li>
+        <li><span class="tag tag--ai1">AI-1</span> First AI (orange)</li>
+        <li><span class="tag tag--ai2">AI-2</span> Second AI (purple)</li>
+      </ol>
+      <p style="margin-top:10px;">The <strong>leader</strong> (who plays first) is chosen before each hand. In match mode, you pick the leader for each new hand.</p>
+    </div>
+
+    <h3>Playing Tiles</h3>
+    <div class="card">
+      <ul>
+        <li>The board has two open ends: <strong>left</strong> and <strong>right</strong>.</li>
+        <li>The first tile of a hand can be played freely (sets both ends).</li>
+        <li>All subsequent tiles must <strong>match</strong> one of the two open end values.</li>
+        <li>If a tile can match <em>either</em> end, the player chooses which end to play on.</li>
+        <li>If a player has any legal move, they <strong>must</strong> play &mdash; passing is not optional.</li>
+      </ul>
+    </div>
+
+    <h3>Passing</h3>
+    <div class="card">
+      <ul>
+        <li>A player may only pass when they have <strong>no legal moves</strong> (no tile matches either board end).</li>
+        <li>Passing reveals information: opponents now know you lack both open-end values.</li>
+        <li>The AI tracks every pass to deduce what tiles you hold.</li>
+      </ul>
+    </div>
+
+    <h3>Winning a Hand</h3>
+    <p>A hand can end in two ways:</p>
+
+    <div class="card card--green">
+      <h3 style="margin-top:0;color:#60d070;">Domino</h3>
+      <p>A player plays their <strong>last tile</strong>, emptying their hand. That player wins immediately.</p>
+      <div class="example">You play your final tile. AI-1 has 15 pips remaining, AI-2 has 12 pips. You score 15 + 12 = <strong>27 points</strong>.</div>
+    </div>
+
+    <div class="card card--orange">
+      <h3 style="margin-top:0;color:#ff8a65;">Block</h3>
+      <p>The board is <strong>locked</strong> &mdash; no player can make a legal move. This is detected when all three players pass consecutively, or when no legal moves remain for anyone after a play.</p>
+      <p>The player with the <strong>lowest pip count</strong> in their remaining hand wins. Ties are broken by turn order.</p>
+      <div class="example">Board locks. You have 8 pips, AI-1 has 18 pips, AI-2 has 24 pips. You win with the lowest count and score (18 + 24) &minus; 8 = <strong>34 points</strong>.</div>
+    </div>
+
+    <!-- ============================================================ -->
+    <h2 id="scoring">2. Scoring</h2>
+    <!-- ============================================================ -->
+
+    <div class="card">
+      <table>
+        <tr>
+          <th>Outcome</th>
+          <th>Points Awarded</th>
+        </tr>
+        <tr>
+          <td><strong>Domino</strong></td>
+          <td>Sum of both opponents' remaining pip counts</td>
+        </tr>
+        <tr>
+          <td><strong>Block Win</strong></td>
+          <td>(Sum of opponents' pips) &minus; (Winner's pips)</td>
+        </tr>
+      </table>
+      <p style="margin-top:10px;opacity:0.7;font-size:0.85rem;">Points are always awarded to the hand winner only. The other two players score 0 for that hand.</p>
+    </div>
+
+    <!-- ============================================================ -->
+    <h2 id="match">3. Match Mode</h2>
+    <!-- ============================================================ -->
+
+    <div class="card">
+      <p>Two game modes are available:</p>
+      <table>
+        <tr>
+          <th>Mode</th>
+          <th>Description</th>
+        </tr>
+        <tr>
+          <td><strong>Quick Game</strong></td>
+          <td>Single hand. The hand winner wins the game.</td>
+        </tr>
+        <tr>
+          <td><strong>Match</strong></td>
+          <td>Play multiple hands. First player to reach the target score wins.</td>
+        </tr>
+      </table>
+      <p style="margin-top:10px;">Target score options: <span class="highlight">1</span>, <span class="highlight">50</span>, or <span class="highlight">100</span> points.</p>
+      <p>After each hand, scores accumulate. Between hands, you choose who leads next.</p>
+    </div>
+
+    <!-- ============================================================ -->
+    <h2 id="independent">4. Independent Mode</h2>
+    <!-- ============================================================ -->
+
+    <div class="card">
+      <p><strong>Each AI plays for itself.</strong> There is no cooperation between AI-1 and AI-2. Every player is a rival.</p>
+      <ul>
+        <li>AI-1 and AI-2 each try to win independently.</li>
+        <li>They may lock each other out just as readily as they lock you out.</li>
+        <li>The Kingmaker strategy applies to all opponents equally &mdash; if either you or the other AI is close to domino, both AIs will try to block them.</li>
+      </ul>
+      <p style="margin-top:10px;opacity:0.7;">This is a true 3-way free-for-all. The AIs do not share information or coordinate moves.</p>
+    </div>
+
+    <!-- ============================================================ -->
+    <h2 id="coordinated">5. Coordinated (Team) Mode</h2>
+    <!-- ============================================================ -->
+
+    <div class="card card--gold">
+      <p><strong>Both AIs team up against you.</strong> AI-1 and AI-2 cooperate using only public board information &mdash; they never share their tiles or cheat.</p>
+      <p>The cooperation emerges from three strategies layered on top of their normal play:</p>
+    </div>
+
+    <div class="strategy coop-strategy">
+      <strong>C1: Non-Aggression Pact</strong>
+      <p>The AIs avoid locking each other out. All endpoint-locking bonuses target <em>only</em> the human player. If a move would block the partner AI but not the human, it gets no lock bonus.</p>
+    </div>
+
+    <div class="strategy coop-strategy">
+      <strong>C2: Squeeze the Human</strong>
+      <p>Both AIs intensify their focus on locking the human's playable values. They get enhanced bonuses for moves that restrict the human's options on one or both board ends. The squeeze effect is stronger than in independent mode.</p>
+    </div>
+
+    <div class="strategy coop-strategy">
+      <strong>C3: Sacrifice for Partner</strong>
+      <p>When a partner AI is close to domino (1&ndash;3 tiles remaining), the other AI shifts priorities to help them finish. This includes playing tiles that keep the board open for the partner's remaining tiles, even at a cost to its own position.</p>
+      <div class="example">AI-1 has 1 tile left. AI-2 plays a tile that sets the board end to a value AI-1 can match, helping AI-1 domino &mdash; even though AI-2 had a better move for itself.</div>
+    </div>
+
+    <div class="card" style="margin-top:16px;">
+      <h3 style="margin-top:0;">Fair Play Guarantee</h3>
+      <p>Coordinated mode is <strong>not</strong> cheating. The AIs:</p>
+      <ul>
+        <li>Cannot see each other's tiles</li>
+        <li>Do not communicate or signal</li>
+        <li>Only use public information: the board state, tile counts, and pass history</li>
+        <li>Each AI independently decides its move with team-oriented scoring</li>
+      </ul>
+    </div>
+
+    <!-- ============================================================ -->
+    <h2 id="ai-strategies">6. AI Strategies (Hard Difficulty)</h2>
+    <!-- ============================================================ -->
+
+    <p>On <strong>Easy</strong> difficulty, the AI plays random legal moves. On <strong>Hard</strong> difficulty, the AI uses eight strategic advantages:</p>
+
+    <div class="strategy">
+      <strong>S1: Perfect Tile Tracking</strong>
+      <p>The AI tracks every tile played and every pass. It knows exactly which tiles remain unseen and narrows down what opponents could be holding.</p>
+    </div>
+
+    <div class="strategy">
+      <strong>S2: Bayesian Inference</strong>
+      <p>When a player passes, the AI records which board-end values they could not match. Over multiple passes, this reveals significant portions of an opponent's hand.</p>
+    </div>
+
+    <div class="strategy">
+      <strong>S3: Endpoint Locking</strong>
+      <p>The AI deliberately plays tiles that set the board ends to values an opponent cannot match (based on pass history). Locking one end is good; locking both ends forces a pass.</p>
+    </div>
+
+    <div class="strategy">
+      <strong>S4: Block Steering</strong>
+      <p>When the board has 6+ tiles, the AI estimates who would win a block. If the AI is winning, it plays to tighten the board and force a block. If losing, it avoids tightening.</p>
+    </div>
+
+    <div class="strategy">
+      <strong>S5: Monte Carlo 3-Ply Lookahead</strong>
+      <p>For every move, the AI simulates 25 possible futures: it plays a tile, an opponent responds (adversarially), then the AI responds again. This 3-turn lookahead catches traps and setups that single-move scoring would miss.</p>
+    </div>
+
+    <div class="strategy">
+      <strong>S6: Chain Detection</strong>
+      <p>The AI identifies sequences of tiles it can play consecutively. A 2-deep chain (play tile A, which lets you play tile B, which lets you play tile C) scores higher than isolated plays.</p>
+    </div>
+
+    <div class="strategy">
+      <strong>S7: Endgame Urgency</strong>
+      <p>When the AI is down to 1&ndash;3 tiles, domino awareness kicks in. With 1 tile left and it's playable, the AI gets a massive bonus for guaranteed domino. It also detects 2-turn chain-outs.</p>
+    </div>
+
+    <div class="strategy">
+      <strong>S8: Kingmaker Awareness</strong>
+      <p>When an opponent has only 1&ndash;2 tiles remaining, the AI penalizes moves that would let them domino. It avoids playing tiles that set the board to values the near-winner can match.</p>
+    </div>
+
+    <div class="card" style="margin-top:16px;">
+      <h3 style="margin-top:0;">Difficulty Comparison</h3>
+      <table>
+        <tr>
+          <th>Feature</th>
+          <th>Easy</th>
+          <th>Hard</th>
+        </tr>
+        <tr>
+          <td>Move selection</td>
+          <td>Random legal move</td>
+          <td>Best-scored move</td>
+        </tr>
+        <tr>
+          <td>Tile tracking</td>
+          <td>None</td>
+          <td>Full tracking</td>
+        </tr>
+        <tr>
+          <td>Lookahead</td>
+          <td>None</td>
+          <td>3-ply (25 samples)</td>
+        </tr>
+        <tr>
+          <td>Opponent modeling</td>
+          <td>None</td>
+          <td>Adversarial</td>
+        </tr>
+        <tr>
+          <td>Cooperation (coord.)</td>
+          <td>None</td>
+          <td>C1 + C2 + C3</td>
+        </tr>
+      </table>
+    </div>
+
+    <!-- ============================================================ -->
+    <h2 id="controls">7. Controls &amp; UI</h2>
+    <!-- ============================================================ -->
+
+    <h3>Playing a Tile</h3>
+    <div class="card">
+      <ol>
+        <li>Tap a <strong>highlighted tile</strong> in your hand (tiles with blue glow are playable).</li>
+        <li>If the tile can play on only one end, it plays automatically.</li>
+        <li>If both ends match, tap the <strong>arrow marker</strong> (left or right) on the board to choose.</li>
+        <li>Tap the selected tile again to deselect.</li>
+      </ol>
+    </div>
+
+    <h3>Other Controls</h3>
+    <div class="card">
+      <table>
+        <tr>
+          <th>Button</th>
+          <th>Action</th>
+        </tr>
+        <tr>
+          <td><strong>Pass</strong></td>
+          <td>Appears when you have no legal moves. Tap to pass your turn.</td>
+        </tr>
+        <tr>
+          <td><strong>Undo</strong></td>
+          <td>Rolls back your last move and both AI responses. Can undo multiple times.</td>
+        </tr>
+        <tr>
+          <td><strong>&laquo; &raquo;</strong></td>
+          <td>Step backward/forward through move history to review the game.</td>
+        </tr>
+        <tr>
+          <td><strong>Review Moves</strong></td>
+          <td>After a hand ends, re-examine the full move sequence.</td>
+        </tr>
+      </table>
+    </div>
+
+    <h3>Color Coding</h3>
+    <div class="card">
+      <p>Each player has a distinct color throughout the game:</p>
+      <ul>
+        <li><span class="color-human"><strong>Green</strong></span> &mdash; You (hand tiles, board tile borders, turn indicator)</li>
+        <li><span class="color-ai1"><strong>Orange</strong></span> &mdash; AI-1 (face-down tiles, board tile borders, score)</li>
+        <li><span class="color-ai2"><strong>Purple</strong></span> &mdash; AI-2 (face-down tiles, board tile borders, score)</li>
+      </ul>
+      <p>Board tiles show colored borders so you can see at a glance who played each tile.</p>
+    </div>
+
+    <h3>AI Analysis Panel</h3>
+    <div class="card">
+      <p>After each AI move, a panel appears showing all moves the AI considered, ranked from best to worst with scores. The chosen move is highlighted. This helps you understand the AI's reasoning.</p>
+    </div>
+
+    <div class="divider"></div>
+
+    <div style="text-align:center;">
+      <a href="index.html" class="back-link">&larr; Back to Game</a>
+    </div>
+
+  </div>
+</body>
+
+</html>

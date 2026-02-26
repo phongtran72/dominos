@@ -1,8 +1,9 @@
 // Service Worker for Dominos 3P — network-first strategy
-var CACHE_NAME = 'dominos-3p-v8';
+var CACHE_NAME = 'dominos-3p-v9';
 var URLS = [
     './',
     './index.html',
+    './rules.html',
     './style.css',
     './style-board.css',
     './game.js',
